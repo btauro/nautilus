@@ -57,18 +57,6 @@ static struct list_head sem_list;
 #define SEMAPHORE_UNLOCK(s) spin_unlock_irq_restore(&(s)->lock, _semaphore_lock_flags)
 #define SEMAPHORE_UNIRQ(s) irq_enable_restore(_semaphore_lock_flags)
 
-struct nk_semaphore {
-    spinlock_t         lock;
-    struct list_head   node; // for global list of named semaphores
-    uint64_t           refcount;
-    char               name[NK_SEMAPHORE_NAME_LEN];
-
-    // count>0  =>  normal operation (down will not wait)
-    // count==0 =>  next down will wait
-    // count <0 => -count waiters exist, next down will wait
-    int                count;
-    nk_thread_queue_t *wait_queue;
-};
 
 struct nk_semaphore *nk_semaphore_create(char *name,
 					 int init_count,

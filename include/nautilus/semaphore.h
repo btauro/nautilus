@@ -32,6 +32,21 @@
 typedef enum { NK_SEMAPHORE_DEFAULT=0 } nk_semaphore_type_t;
 
 #define NK_SEMAPHORE_NAME_LEN 32
+#include <nautilus/spinlock.h>
+#include <nautilus/dev.h>
+struct nk_semaphore {
+    spinlock_t         lock;
+    struct list_head   node; // for global list of named semaphores
+    uint64_t           refcount;
+    char               name[NK_SEMAPHORE_NAME_LEN];
+
+    // count>0  =>  normal operation (down will not wait)
+    // count==0 =>  next down will wait
+    // count <0 => -count waiters exist, next down will wait
+    int                count;
+    nk_thread_queue_t *wait_queue;
+};
+
 
 // name is optional, currently only one type, and no characteristics
 struct nk_semaphore *nk_semaphore_create(char *name,
