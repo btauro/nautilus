@@ -920,13 +920,6 @@ config DEBUG_LOADER
         help
                 Turn on debug prints for the loader
 
-config DEBUG_LINKER
-        bool "Debug linker"
-        depends on DEBUG_PRINTS
-        default n
-        help
-                Turn on debug prints for the dynamic linker
-
 config DEBUG_PMC
         bool "Debug performance counters"
         depends on DEBUG_PRINTS
@@ -955,6 +948,18 @@ menu "Runtimes"
             depends on LEGION_RT
             help
               Turns on deep debugging prints for legion runtime in Nautilus
+
+        config XTASK_RT
+            bool "XTASK RT"
+            depends on CXX_SUPPORT
+
+        config XTASK_RT_DEBUG
+            bool "XTASK RT Debugging"
+            default n
+            depends on XTASK_RT
+            help
+              Turns on deep debugging prints for xtask runtime in Nautilus
+        
 
         config NDPC_RT
           bool  "NDPC RT"
