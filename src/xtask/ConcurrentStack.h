@@ -25,7 +25,7 @@ template<typename T>
 class ConcurrentStack {
 private:
     //mutable std::mutex m;
-    mutable sem_t m;
+    mutable sem_t m = NULL;
     std::vector<T> data;
     int capacity;
 public:
@@ -34,18 +34,26 @@ public:
         nk_semaphore_release(m);
     }
 
+    ConcurrentStack() {
+        m = nk_semaphore_create("xtask-stack", 1, NK_SEMAPHORE_DEFAULT, NULL);
+    }
+
     ConcurrentStack(int size) {
-        m = nk_semaphore_create(NULL, 1, 0, NULL);
+        printk("Constructor 1 called\n");
+        m = nk_semaphore_create("xtask-stack", 1, 0, NULL);
         data.reserve(size);
         capacity = size;
     }
 
     ConcurrentStack(std::vector<T> d) {
-        m = nk_semaphore_create(NULL, 1, 0, NULL);
+        printk("Constructor 2 called\n");
+        m = nk_semaphore_create("xtask-stack", 1, 0, NULL);
         data = d;
     }
 
     ConcurrentStack(const ConcurrentStack& other) {
+
+        printk("Constructor 3 called\n");
         //std::lock_guard<std::mutex> lock(other.m);
         nk_semaphore_down(other.m);
 
@@ -54,7 +62,7 @@ public:
         // in order to ensure that the mutex is held across the copy.
         data = other.data;
         nk_semaphore_up(other.m);
-        m = nk_semaphore_create(NULL, 1, 0, NULL);
+        m = nk_semaphore_create("xtask-stack", 1, 0, NULL);
     }
 
     ConcurrentStack& operator=(const ConcurrentStack&) = delete;
@@ -62,6 +70,7 @@ public:
     void push(T new_value) {
         printk("Push \n");
         //std::lock_guard<std::mutex> lock(m);
+        
         nk_semaphore_down(m);
 
         printk("Does this really work \n");

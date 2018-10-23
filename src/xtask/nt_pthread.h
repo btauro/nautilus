@@ -4,8 +4,7 @@
 #define sched_yield() nk_yield();
 
 void 
-pthread_creat(void * thread_pointer, void *(*function_pointer) (void *), void * attribute_pointer ,void * input, int core) 
+pthread_creat(nk_thread_id_t * thread_pointer, void *(*function_pointer) (void *), void * attribute_pointer ,void * input, int core) 
 {
-    nk_thread_start((nk_thread_fun_t)function_pointer, input, &thread_pointer, 0, TSTACK_DEFAULT, ( nk_thread_id_t * )thread_pointer, core);
-    nk_thread_run(thread_pointer);
+    nk_thread_start((nk_thread_fun_t)function_pointer, input, NULL, 0, TSTACK_DEFAULT, thread_pointer, core);
 }

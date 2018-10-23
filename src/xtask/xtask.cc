@@ -40,7 +40,7 @@ void
 sem_init(sem_t * m, int pshared, int value)
 {
     
-    *m = nk_semaphore_create(NULL, value, NK_SEMAPHORE_DEFAULT, NULL);
+    *m = nk_semaphore_create("xtask-send", value, NK_SEMAPHORE_DEFAULT, NULL);
 }
 
 void* xtask_leaf(xtask_task* t) {
@@ -122,18 +122,19 @@ void xtask::xtask_setup(int workers, int numTasks, int startWorkers) {
     ms->numWorkers = workers;
     ms->numTasks = numTasks;
     ms->nextQueue = 0;
-    sem_init(&donesignal, 0, 0);
+    sem_init(&donesignal, 0, 1);
     printk("Semaphore inited\n");
     //Change here for multiple single/multiple stacks
     for (int i = 0; i < workers; i++) {
         struct worker *w = (struct worker*)malloc(sizeof(struct worker));
-        ms->workers.emplace_back(w);
+
+        ms->workers.push_back(w);
     }
 
     if (startWorkers) {
 
         for (int t  = 0; t < workers; t++) {
-            struct threadData *tl = (threadData*) malloc(sizeof (threadData));
+            struct threadData *tl = (threadData*) malloc(sizeof (struct threadData));
             tl->w = ms->workers[t];
             //Change here for single/multiple stacks
             tl->threadId = t;

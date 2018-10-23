@@ -235,7 +235,7 @@ void nk_semaphore_down(struct nk_semaphore *s)
 {
     SEMAPHORE_LOCK_CONF;
 
-    DEBUG("down start %s\n",s->name);
+    DEBUG("down start  Name %s Count %d \n",s->name, s->count);
     
     SEMAPHORE_LOCK(s);
     s->count--;
