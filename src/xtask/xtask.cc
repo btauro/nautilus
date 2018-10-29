@@ -206,6 +206,8 @@ void xtask::xtask_poll(int* totalTasks) {
     for (int i = 0; i < ms->numWorkers; i++) {
         //TODO: Need to implement pthread_cancel in naut we only have kill for now
         pthread_cancel(ms->workers[i]->t);
+        // TODO KCH: note that joining on a thread which has been destroyed
+        // will produce, at the very least, undesirable effects
         pthread_join(ms->workers[i]->t, NULL);
     }
 

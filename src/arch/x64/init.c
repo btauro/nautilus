@@ -220,8 +220,8 @@ runtime_init (void)
 #endif
 
 #ifdef NAUT_CONFIG_XTASK_RT
-    extern void xtask();
-    xtask();
+    extern int xtask_init();
+    xtask_init();
 #endif
 }
 
