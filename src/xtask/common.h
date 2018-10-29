@@ -27,14 +27,13 @@
 #define LEAF_TASK 1
 #define NON_LEAF_TASK 0
 
-#define NUM_CPUS 2
+#define NUM_CPUS 1
 
 typedef long unsigned int ticks;
 
-#ifdef PHI
 
 //get number of ticks, could be problematic on modern CPUs with out of order execution
-static __inline__ ticks getticks(void) {
+static __inline__ ticks getticks1(void) {
     ticks tsc;
     __asm__ __volatile__(
             "rdtsc;"
@@ -47,9 +46,9 @@ static __inline__ ticks getticks(void) {
     return tsc;
 }
 
-#else
 
 static __inline__ ticks getticks(void) {
+
     ticks tsc;
     __asm__ __volatile__(
             "rdtscp;"
@@ -59,9 +58,10 @@ static __inline__ ticks getticks(void) {
             :
             : "%rcx", "%rdx");
 
+
     return tsc;
 }
-#endif
+
 static inline void spinlock(volatile int *lock)
 {
     while(!__sync_bool_compare_and_swap(lock, 0, 1))

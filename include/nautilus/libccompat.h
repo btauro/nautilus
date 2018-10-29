@@ -184,24 +184,24 @@ int getc(FILE*);
 
 int fileno(FILE*);
     
-char *fgets(char *restrict s, int n, FILE *restrict stream); 
+//char *fgets(char *restrict s, int n, FILE *restrict stream); 
 FILE *freopen(const char *fname, const char *mode,FILE *stream);
 
 int ferror(FILE *);
 long     ftell(FILE *);
-int fscanf(FILE *restrict stream, const char *restrict format, ... );
+//int fscanf(FILE *restrict stream, const char *restrict format, ... );
 void clearerr(FILE *stream); 
 
 int fseek(FILE *stream, long offset, int whence); 
 
-int setvbuf(FILE *restrict stream, char *restrict buf, int type,
-       size_t size);
+//int setvbuf(FILE *restrict stream, char *restrict buf, int type,
+ //      size_t size);
 
 int system(const char *command);
 
 char *getenv(const char *name);
 
-int rename(const char *old, const char *new);
+//int rename(const char *old, const char *new);
 
 int remove(const char *path);
 

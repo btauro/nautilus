@@ -14,33 +14,45 @@
 
 extern "C" {
 #include <nautilus/semaphore.h>
+#include <nautilus/mm.h>
 #include "nt_pthread.h"
+
+typedef struct nk_semaphore* sem_t;
+//#define sem_t struct nk_semaphore*
+//struct nk_semaphore *  donesignal;
 }
  
 #include <vector>
 #include <stack>
 #include "xtask.h"
-using namespace std;
+
+sem_t donesignal;
+
 struct threadData {
     struct worker *w;
     xtask* currentObj;
     int threadId;
 };
 
-sem_t donesignal;
 
 xtask::xtask() {
-    ms = (struct master_state *) malloc(sizeof (struct master_state));
+    ms = new master_state();
+    //ms = (struct master_state *) malloc(sizeof (struct master_state));
+    //ms->workers = std::vector<struct worker*>();
+    //std::vector<struct worker *> * test = &ms->workers;
+    //test = new std::vector<struct worker *>();
+    //struct worker* w = (struct worker*)malloc(sizeof(struct worker));
+    //ms->workers.emplace_back(w);
+    //printk("Xtask Constructor finished Invocation\n");    
 }
 
 xtask::~xtask() {
 }
 
-void 
-sem_init(sem_t * m, int pshared, int value)
+void
+sem_init(sem_t & m, int pshared, int value)
 {
-    
-    *m = nk_semaphore_create("xtask-send", value, NK_SEMAPHORE_DEFAULT, NULL);
+    m = nk_semaphore_create("xtask-donesignal", value, NK_SEMAPHORE_DEFAULT, NULL);
 }
 
 void* xtask_leaf(xtask_task* t) {
@@ -54,7 +66,7 @@ void* xtask_leaf(xtask_task* t) {
         int dc = __sync_sub_and_fetch(&((xtask_parent*) next)->depCounter, 1);
         if (dc != 0) {
             __sync_bool_compare_and_swap(&((xtask_parent*) next)->onHold, 1, 0); //release the hold
-            xtask_task *dummy = (xtask_task*) (malloc(sizeof (xtask_task)));
+            xtask_task *dummy = new xtask_task();
 
             *dummy = {NULL, NULL, next, NULL};
             return dummy;
@@ -66,12 +78,12 @@ void* xtask_leaf(xtask_task* t) {
     return NULL;
 }
 
-void* worker_handler(void *data) {
+void* worker_handler(void *data, void **out) {
     threadData* tl = (threadData*) data;
     int threadId = tl->threadId; //Also the core ID to which it is to be attached.
     struct worker *w = tl->w;
     while (1) {
-        //printf("thread: %d\n", threadId);
+        //printk("thread: %d\n", threadId);
         xtask_task *task = w->tasks.pop();
         if (!task) continue;
 
@@ -83,8 +95,8 @@ void* worker_handler(void *data) {
             if (!retTask->parent) {
                 int scnt = 0;
                 for (xtask_task* t = retTask; t; t = (xtask_task*) t->sibling, scnt++);
-                    p = (xtask_parent*) (malloc(sizeof (xtask_parent)));
-                    p->task = (xtask_task*) (malloc(sizeof (xtask_task)));
+                    p = new xtask_parent();
+                    p->task = new xtask_task();
                     *(p->task) = {xtask_leaf, NULL, task->parent, NULL};
                     p->depCounter = scnt;
                     p->onHold = 0;
@@ -108,8 +120,8 @@ void* worker_handler(void *data) {
             } else {
                 //If no parent, it is the root task
                 nk_semaphore_up(donesignal);
-
-}
+                printk("\n I am parent\n");
+            }
         }
 
     }
@@ -117,32 +129,31 @@ void* worker_handler(void *data) {
 }
 
 void xtask::xtask_setup(int workers, int numTasks, int startWorkers) {
-    printk("Setting up xtask, num_workers=%d, numtasks=%d, startworkers=%d\n", 
-            workers, numTasks, startWorkers);
     ms->numWorkers = workers;
     ms->numTasks = numTasks;
     ms->nextQueue = 0;
-    sem_init(&donesignal, 0, 1);
-    printk("Semaphore inited\n");
+    ms->workers = std::vector<struct worker*>();
+    sem_init(donesignal, 0, 0);
     //Change here for multiple single/multiple stacks
     for (int i = 0; i < workers; i++) {
-        struct worker *w = (struct worker*)malloc(sizeof(struct worker));
-
-        ms->workers.push_back(w);
+        //struct worker *w = (struct worker*)malloc(sizeof(struct worker));
+        struct worker *w = new worker();
+        w->tasks.initSemaphores();
+        ms->workers.emplace_back(w);
     }
 
     if (startWorkers) {
 
         for (int t  = 0; t < workers; t++) {
-            struct threadData *tl = (threadData*) malloc(sizeof (struct threadData));
+            //struct threadData *tl = (threadData*) malloc(sizeof (struct threadData));
+            struct threadData *tl = new threadData();
             tl->w = ms->workers[t];
             //Change here for single/multiple stacks
             tl->threadId = t;
             tl->currentObj = this;
-            pthread_creat(&(ms->workers[t]->t), worker_handler, NULL, (void*) tl, t % NUM_CPUS);
+            pthread_creat(&(ms->workers[t]->t), worker_handler, NULL, (void*) tl, 2);
         }
     }
-    printk("Threads Inited\n");
 }
 
 void xtask::xtask_cleanup() {
@@ -150,13 +161,12 @@ void xtask::xtask_cleanup() {
 }
 
 void xtask::xtask_push(xtask_task *task) {
-    printk("xtask push\n");
     xtask_parent *p;
     if (!task->parent) {
         int scnt = 0;
         for (xtask_task* t = task; t; t = (xtask_task*) t->sibling, scnt++);
-        p = (xtask_parent*) (malloc(sizeof (xtask_parent)));
-        p->task = (xtask_task*) (malloc(sizeof (xtask_task)));
+        p = new xtask_parent();
+        p->task = new xtask_task();
         *(p->task) = {xtask_leaf, NULL, NULL, NULL};
         p->depCounter = scnt;
         p->onHold = 0;
@@ -164,12 +174,10 @@ void xtask::xtask_push(xtask_task *task) {
 
     for (xtask_task* t = task; t; t = (xtask_task*) t->sibling) {
 
-        printk("xtask loop before real push\n");
         t->parent = task->parent ? task->parent : p;
         xtask_realpush(t);
     }
 
-    printk("xtask push complete\n");
 }
 
 xtask_task* xtask::xtask_pop(int ds) {
@@ -178,24 +186,23 @@ xtask_task* xtask::xtask_pop(int ds) {
 
 void xtask::xtask_realpush(xtask_task *task) {
 
-    printk("xtask real push\n");
     int next = __sync_fetch_and_add(&ms->nextQueue, 1);
 
     if (ms->numWorkers == 0) {
         printk("ERROR: non-positive worker count\n");
         return;
     }
-   
     //Change here for single/multiple stacks
     (ms->workers[next % ms->numWorkers]->tasks).push(task);
     //ms->tasks[0].push(task);
     __sync_fetch_and_add(&ms->numTasks, 1);
 
-    printk("xtask real push complete\n");
 }
 
 void xtask::xtask_poll(int* totalTasks) {
-      nk_semaphore_up(donesignal);
+    nk_semaphore_down(donesignal);
+    printk("---------------------------about to return fron xtask_poll\n");
+  //  udelay(10);
     for (int i = 0; i < ms->numWorkers; i++) {
         //TODO: Need to implement pthread_cancel in naut we only have kill for now
         pthread_cancel(ms->workers[i]->t);
@@ -203,6 +210,7 @@ void xtask::xtask_poll(int* totalTasks) {
     }
 
     *totalTasks = ms->numTasks;
+    printk("---------------------------about to return fron xtask_poll\n");
     return;
 }
 
