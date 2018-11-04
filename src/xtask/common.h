@@ -27,7 +27,7 @@
 #define LEAF_TASK 1
 #define NON_LEAF_TASK 0
 
-#define NUM_CPUS 1
+#define NUM_CPUS 2
 
 typedef long unsigned int ticks;
 

@@ -15,13 +15,15 @@ extern "C" {
 #include <nautilus/nautilus.h>
 #include <nautilus/mm.h> 
 #include <nautilus/random.h>
+#include <nautilus/libccompat.h>
+
+#define DEBUG(fmt, args...)    DEBUG_PRINT("XTASK: " fmt, ##args)
 }
 #include "xtask.h"
 
 #define RAND() ((uint32_t)rand())
 using namespace std;
 
-#include <nautilus/libccompat.h>
 xtask * xt;
 
 float clockFreq;
@@ -68,9 +70,8 @@ struct fulldata {
 
 void* add_xtask(xtask_task *t) {
     fulldata* data = (fulldata*) t->data;
-    //printk("%d + %d \n", data->aout, data->bout);
+    printk("%d + %d An = %d  Bn = %d\n", data->aout, data->bout, data->a.n, data->b.n);
     *data->out = data->aout + data->bout;
-    printk("Fibonnacci Value = %d\n", *data->out);
     return NULL;
 }
 
@@ -167,15 +168,15 @@ static int part(int lo, int hi) {
 }
 
 void* sort_xtask(xtask_task *t) {
-    qdata* d = (qdata*) t->data;
+    qdata* d = (struct qdata*) t->data;
     int lo = d->lo;
     int hi = d->hi;
     //free(d);
 
     if (lo < hi) {
         int p = part(lo, hi);
-        qdata* a = (qdata*) malloc(sizeof (qdata));
-        qdata* b = (qdata*) malloc(sizeof (qdata));
+        qdata* a = new qdata();
+        qdata* b = new qdata();
 
         a->lo = lo;
         a->hi = p - 1;
@@ -183,10 +184,10 @@ void* sort_xtask(xtask_task *t) {
         b->lo = p + 1;
         b->hi = hi;
 
-        xtask_task *atask = (xtask_task*) malloc(sizeof (xtask_task));
+        xtask_task *atask = new xtask_task();
         *atask = {sort_xtask, a, NULL, NULL};
 
-        xtask_task *btask = (xtask_task*) malloc(sizeof (xtask_task));
+        xtask_task *btask = new xtask_task();
         *btask = {sort_xtask, b, NULL, atask};
 
         return btask;
@@ -240,7 +241,7 @@ int xtask_main(int argc, char** argv) {
     clock_gettime(CLOCK_MONOTONIC, &tvstop);
     cycles[1] = getticks1();
     clock_gettime(CLOCK_MONOTONIC, &tvstop);
-    microseconds = ((tvstop.tv_sec - tvstart.tv_sec)*1000000) + ((tvstop.tv_nsec - tvstart.tv_nsec)*1000);
+    microseconds = ((tvstop.tv_sec - tvstart.tv_sec) * 1000000) + ((tvstop.tv_nsec - tvstart.tv_nsec) / 1000);
 
     clockFreq = ((cycles[1] - cycles[0])*1.0) / (microseconds * 1000);
 
@@ -293,7 +294,7 @@ int xtask_main(int argc, char** argv) {
                   double totalTime = (diff_tick * 1.0 * 1E-9) / clockFreq;
 
                   printk("Fib(%d) = %d\n", n, *fib_output);
-                  printk("%d %d %f %lf\n", numThreads, totalTasksRun, totalTime, (totalTasksRun * 1.0 / totalTime));
+                  DEBUG("%d %d %f %f\n", numThreads, totalTasksRun, totalTime, (totalTasksRun * 1.0 / totalTime));
             }
             break;
         case 2://Quick sort
@@ -320,7 +321,7 @@ int xtask_main(int argc, char** argv) {
             char* arg2 = argv[2];
             numThreads = atoi(arg2);
 
-     //       struct timespec tstart, tend;
+            struct timespec tstart, tend;
             int totalTasksRun;
             
 #ifdef USE_xtask
@@ -328,11 +329,11 @@ int xtask_main(int argc, char** argv) {
                 xt->xtask_setup(numThreads, 0, 1);
 #endif
 
-        //    ticks start_tick = (ticks) 0;
-          //  ticks end_tick = (ticks) 0;
+              ticks start_tick = (ticks) 0;
+              ticks end_tick = (ticks) 0;
 
-            //ticks diff_tick = (ticks) 0;
-            //start_tick = getticks();
+              ticks diff_tick = (ticks) 0;
+              start_tick = getticks1();
 #if defined USE_single
             sort(0, size - 1);
 #elif defined USE_openmp
@@ -349,12 +350,12 @@ int xtask_main(int argc, char** argv) {
             xt->xtask_push(&mainTask);
             xt->xtask_poll(&totalTasksRun);
 #endif
-           // end_tick = getticks();
-           // diff_tick = end_tick - start_tick;
+              end_tick = getticks1();
+              diff_tick = end_tick - start_tick;
+ 
+              double totalTime = (diff_tick * 1E-9) / clockFreq;
 
-            //double totalTime = (diff_tick * 1E-9) / clockFreq;
-
-          //  printk("%d %d %f %lf\n", numThreads, totalTasksRun, totalTime, (totalTasksRun * 1.0 / totalTime));
+              DEBUG(" Value %d %d %f %f\n", numThreads, totalTasksRun, totalTime, (totalTasksRun * 1.0 / totalTime));
 
 #ifdef DEBUG
             for (int i = 0; i < size; i++)

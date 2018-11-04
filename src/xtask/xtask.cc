@@ -75,7 +75,9 @@ void* xtask_leaf(xtask_task* t) {
         next = (xtask_parent*) next->task->parent;
     }
     nk_semaphore_up(donesignal);
+
     return NULL;
+
 }
 
 void* worker_handler(void *data, void **out) {
@@ -120,6 +122,8 @@ void* worker_handler(void *data, void **out) {
             } else {
                 //If no parent, it is the root task
                 nk_semaphore_up(donesignal);
+                
+                if (!task) break;;
                 printk("\n I am parent\n");
             }
         }
@@ -138,7 +142,6 @@ void xtask::xtask_setup(int workers, int numTasks, int startWorkers) {
     for (int i = 0; i < workers; i++) {
         //struct worker *w = (struct worker*)malloc(sizeof(struct worker));
         struct worker *w = new worker();
-        w->tasks.initSemaphores();
         ms->workers.emplace_back(w);
     }
 
@@ -151,7 +154,7 @@ void xtask::xtask_setup(int workers, int numTasks, int startWorkers) {
             //Change here for single/multiple stacks
             tl->threadId = t;
             tl->currentObj = this;
-            pthread_creat(&(ms->workers[t]->t), worker_handler, NULL, (void*) tl, 2);
+            pthread_creat(&(ms->workers[t]->t), worker_handler, NULL, (void*) tl, (t % NUM_CPUS));
         }
     }
 }
@@ -201,18 +204,15 @@ void xtask::xtask_realpush(xtask_task *task) {
 
 void xtask::xtask_poll(int* totalTasks) {
     nk_semaphore_down(donesignal);
-    printk("---------------------------about to return fron xtask_poll\n");
-  //  udelay(10);
     for (int i = 0; i < ms->numWorkers; i++) {
         //TODO: Need to implement pthread_cancel in naut we only have kill for now
-        pthread_cancel(ms->workers[i]->t);
+//         pthread_cancel((ms->workers[i]->t));
         // TODO KCH: note that joining on a thread which has been destroyed
         // will produce, at the very least, undesirable effects
-        pthread_join(ms->workers[i]->t, NULL);
+//        pthread_join(ms->workers[i]->t, NULL);
     }
 
     *totalTasks = ms->numTasks;
-    printk("---------------------------about to return fron xtask_poll\n");
     return;
 }
 
