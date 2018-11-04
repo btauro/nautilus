@@ -54,7 +54,7 @@ sem_init(sem_t & m, int pshared, int value)
 {
     m = nk_semaphore_create("xtask-donesignal", value, NK_SEMAPHORE_DEFAULT, NULL);
 }
-
+int done = 0;
 void* xtask_leaf(xtask_task* t) {
     //Check recursively for parents
     xtask_parent* next = (xtask_parent*) t->parent;
@@ -75,7 +75,7 @@ void* xtask_leaf(xtask_task* t) {
         next = (xtask_parent*) next->task->parent;
     }
     nk_semaphore_up(donesignal);
-
+    done = 1;
     return NULL;
 
 }
@@ -87,8 +87,12 @@ void* worker_handler(void *data, void **out) {
     while (1) {
         //printk("thread: %d\n", threadId);
         xtask_task *task = w->tasks.pop();
+        if(!task && done == 1) {
+            break;
+        }
+        done = 0;
         if (!task) continue;
-
+        
         xtask_task *retTask = (xtask_task*) task->func(task);
         //If a task is returned, we need to push the child tasks.
 
@@ -129,6 +133,8 @@ void* worker_handler(void *data, void **out) {
         }
 
     }
+    
+    printk("Thread Exit\n");
     return NULL;
 }
 
