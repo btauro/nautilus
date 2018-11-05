@@ -6,5 +6,5 @@
 void 
 pthread_creat(nk_thread_id_t * thread_pointer, void *(*function_pointer) (void *, void**), void * attribute_pointer ,void * input, int core) 
 {
-    nk_thread_start((nk_thread_fun_t)function_pointer, input, NULL, 0, TSTACK_DEFAULT, thread_pointer, core);
+    nk_thread_start((nk_thread_fun_t)function_pointer, input, NULL, 0, TSTACK_4KB, thread_pointer, core);
 }

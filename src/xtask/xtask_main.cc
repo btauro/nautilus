@@ -70,7 +70,6 @@ struct fulldata {
 
 void* add_xtask(xtask_task *t) {
     fulldata* data = (fulldata*) t->data;
-    printk("%d + %d An = %d  Bn = %d\n", data->aout, data->bout, data->a.n, data->b.n);
     *data->out = data->aout + data->bout;
     return NULL;
 }
@@ -98,16 +97,16 @@ void* fib_xtask(xtask_task *t) {
         fd->out = data->out;
 
         xtask_parent *addTask = new xtask_parent();
-        addTask->task =  new xtask_task();
+        addTask->task =  (struct xtask_task *)malloc (sizeof(struct xtask_task));
 
         *addTask->task = {add_xtask, fd, t->parent, NULL};
         addTask->depCounter = 2;
         addTask->onHold = 0;
 
-        xtask_task *fib2 = new xtask_task();
+        xtask_task *fib2 = (struct xtask_task *)malloc (sizeof(struct xtask_task));
         *fib2 = {fib_xtask, &(fd->b), addTask, NULL};
 
-        xtask_task *fib1 = new xtask_task();
+        xtask_task *fib1 = (struct xtask_task *)malloc(sizeof(struct xtask_task));
         *fib1 = {fib_xtask, &(fd->a), addTask, fib2};
 
         return fib1;

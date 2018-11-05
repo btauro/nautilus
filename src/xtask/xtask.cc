@@ -26,7 +26,7 @@ typedef struct nk_semaphore* sem_t;
 #include <stack>
 #include "xtask.h"
 
-sem_t donesignal;
+static volatile int donesignal;
 
 struct threadData {
     struct worker *w;
@@ -49,12 +49,6 @@ xtask::xtask() {
 xtask::~xtask() {
 }
 
-void
-sem_init(sem_t & m, int pshared, int value)
-{
-    m = nk_semaphore_create("xtask-donesignal", value, NK_SEMAPHORE_DEFAULT, NULL);
-}
-int done = 0;
 void* xtask_leaf(xtask_task* t) {
     //Check recursively for parents
     xtask_parent* next = (xtask_parent*) t->parent;
@@ -74,8 +68,7 @@ void* xtask_leaf(xtask_task* t) {
         __sync_bool_compare_and_swap(&((xtask_parent*) next)->onHold, 1, 0); //release the hold
         next = (xtask_parent*) next->task->parent;
     }
-    nk_semaphore_up(donesignal);
-    done = 1;
+    donesignal = 1;
     return NULL;
 
 }
@@ -87,11 +80,11 @@ void* worker_handler(void *data, void **out) {
     while (1) {
         //printk("thread: %d\n", threadId);
         xtask_task *task = w->tasks.pop();
-        if(!task && done == 1) {
+        if(!task && donesignal == 1) {
             break;
         }
-        done = 0;
-        if (!task) continue;
+        if (!task) 
+            continue;
         
         xtask_task *retTask = (xtask_task*) task->func(task);
         //If a task is returned, we need to push the child tasks.
@@ -125,10 +118,7 @@ void* worker_handler(void *data, void **out) {
                 }
             } else {
                 //If no parent, it is the root task
-                nk_semaphore_up(donesignal);
-                
-                if (!task) break;;
-                printk("\n I am parent\n");
+                donesignal = 1;
             }
         }
 
@@ -143,7 +133,8 @@ void xtask::xtask_setup(int workers, int numTasks, int startWorkers) {
     ms->numTasks = numTasks;
     ms->nextQueue = 0;
     ms->workers = std::vector<struct worker*>();
-    sem_init(donesignal, 0, 0);
+
+    donesignal = 0;
     //Change here for multiple single/multiple stacks
     for (int i = 0; i < workers; i++) {
         //struct worker *w = (struct worker*)malloc(sizeof(struct worker));
@@ -166,6 +157,7 @@ void xtask::xtask_setup(int workers, int numTasks, int startWorkers) {
 }
 
 void xtask::xtask_cleanup() {
+    //nk_semaphore_release(finishcounter);
     free(ms);
 }
 
@@ -209,15 +201,10 @@ void xtask::xtask_realpush(xtask_task *task) {
 }
 
 void xtask::xtask_poll(int* totalTasks) {
-    nk_semaphore_down(donesignal);
-    for (int i = 0; i < ms->numWorkers; i++) {
-        //TODO: Need to implement pthread_cancel in naut we only have kill for now
-//         pthread_cancel((ms->workers[i]->t));
-        // TODO KCH: note that joining on a thread which has been destroyed
-        // will produce, at the very least, undesirable effects
-//        pthread_join(ms->workers[i]->t, NULL);
+    while (donesignal != 1);  
+    for(int i = 0; i < ms->numWorkers; i++) {
+        pthread_join(ms->workers[i]->t, NULL);
     }
-
     *totalTasks = ms->numTasks;
     return;
 }
