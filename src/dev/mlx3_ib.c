@@ -37,6 +37,7 @@
 #ifndef NAUT_CONFIG_DEBUG_MLX3_PCI
 #undef DEBUG_PRINT
 #define DEBUG_PRINT(fmt, args...)
+#define ERROR(fmt, args...)    ERROR_PRINT("e1000e_pci: " fmt, ##args)
 #endif
 
 
@@ -51,7 +52,18 @@
 #define mzero_checked(ptr, size, desc) \
     __mzero_checked(ptr, size, "Could not allocate " desc "\n", return -1)
 
-    
+static inline void *
+byte_align(void* buffer, uint32_t byte)
+{
+
+    DEBUG("Alignment %p \n", buffer);
+    // Align address to 32 byte Might waste some buffer space 
+    while ((((uint64_t)buffer & (byte - 1)))) {
+        DEBUG("Alignment Buffer %p \n", buffer);
+        buffer++; 
+    }
+    return buffer;
+}
 
 static inline uint16_t
 bswap16 (uint16_t x)
@@ -3141,7 +3153,7 @@ swab32 (uint32_t x)
 
 
 static struct mlx3_eq *
-create_eq (struct mlx3_ib * mlx)
+create_eq (struct mlx3_ib * mlx, uint64_t base_vector)
 {
     struct mlx3_eq_context * ctx        = NULL;
     struct mlx3_eq * eq                 = NULL;
@@ -3168,13 +3180,7 @@ create_eq (struct mlx3_ib * mlx)
     __mzero_checked(eq->buffer, (npages * PAGE_SIZE_4KB) + eqe_padding, 
             "Could not allocate EQ buffer\n", goto out_err0);
 
-    // Align address to 32 byte Might waste some buffer space 
-    while (((uint64_t)eq->buffer & (31)) && (cnt < eqe_padding)) {
-        DEBUG("Alignment Count %d Buffer %p \n", cnt, eq->buffer);
-        eq->buffer++; 
-        cnt++;
-    }
-
+    byte_align(eq->buffer , 32);
     // NOTE: this assumes we only have *one* EQ which is not a reserved eq! each uar has 4 eq doorbells if uar is reserved even eq cannot be used
     eq->uar_map = mlx->uar_start  + ((eq->eqn / 4) << PAGE_SHIFT_4KB);
 
@@ -3182,9 +3188,8 @@ create_eq (struct mlx3_ib * mlx)
     eq->mtt      = (void*)mlx3_alloc_mtt(mlx, npages);
 
     // TODO: Should use MSI-X instead of legacy INTs
-    eq->intr_vec = IRQ_NUMBER;
+    eq->intr_vec = base_vector;
     eq->pci_intr = mlx->dev->cfg.dev_cfg.intr_pin;
-
     if (mlx3_WRITE_MTT(mlx, (uint64_t)eq->mtt, eq->buffer, npages)) {
         ERROR("Could not write MTT\n");
         goto out_err1;
@@ -3194,7 +3199,7 @@ create_eq (struct mlx3_ib * mlx)
 
     ctx->flags       = bswap32(MLX3_EQ_STATUS_OK | MLX3_EQ_STATE_ARMED);
     ctx->log_eq_size = ilog2(eq->nentry);
-
+//    ctx->intr = base_vector;
     ctx->log_page_size   = PAGE_SHIFT_4KB - MLX3_ICM_PAGE_SHIFT;
     ctx->mtt_base_addr_h = ((uint64_t)eq->mtt) >> 32;
     ctx->mtt_base_addr_l = bswap32(((uint64_t)eq->mtt) & 0xffffffffu);
@@ -4035,10 +4040,10 @@ mlx3_create_cq (struct mlx3_ib * mlx,
 
     mtt_addr = mlx3_alloc_mtt(mlx, npages);
 
-    __mzero_checked(buf, CQE_SIZE * nent, "Could not allocate CQ buffer\n", goto out_err1);
+    __mzero_checked(buf, ((CQE_SIZE * nent) + 32), "Could not allocate CQ buffer\n", goto out_err1);
 
     cq->buffer = buf;
-
+    byte_align(cq->buffer, 32);
     if (mlx3_WRITE_MTT(mlx, mtt_addr, buf, npages)) {
         ERROR("Could not write MTT in %s\n", __func__);
         goto out_err2;
@@ -4142,8 +4147,8 @@ create_qp (struct mlx3_ib * mlx, struct mlx3_cq * cq, int size, int is_sqp, int 
 	 * this control region in units of 64 bytes.
 	 */
 
-    __mzero_checked(qp->buf->data, size, "Could not allocate WQ buffer data area\n", goto out_err1);
-
+    __mzero_checked(qp->buf->data, size + (16 * SQ_STRIDE_DEFAULT), "Could not allocate WQ buffer data area\n", goto out_err1);
+    byte_align(qp->buf->data , 16 * SQ_STRIDE_DEFAULT);
     DEBUG("WQE Buffer %p\n", qp->buf->data);
 
     qp->buf->mtt = (uint64_t*)mlx3_alloc_mtt(mlx, size / PAGE_SIZE_4KB);
@@ -4703,6 +4708,7 @@ mlx3_build_raw_pkt (void * pkt, int pkt_size, int src_qpn, int dst_qpn, uint32_t
 static int 
 mlx3_init_port (struct mlx3_ib * mlx, int port)
 {
+    DEBUG("\n INIT PORT\n");
     int err;
     
     mzero_checked(mlx->port_cap, sizeof(struct mlx3_port_cap), "port caps struct");
@@ -4710,10 +4716,16 @@ mlx3_init_port (struct mlx3_ib * mlx, int port)
     err = mlx3_mailbox_cmd(mlx, 0, 0, port, 0, CMD_INIT_PORT,
             CMD_TIME_CLASS_A);
 
-    /* Wait for the port to be initialized */
-    while (mlx->port_cap->link_state != 1) {
+     while (mlx->port_cap->link_state != 1) {
         mlx3_query_port(mlx, 1, mlx->port_cap, 0);  
+    } 
+    
+
+    // wait for the port to come up
+    while (link != 1) {
+        udelay(10);
     }
+
 
     DEBUG("PORT INITIALIZED\n");
 
@@ -4770,14 +4782,28 @@ map_eq (struct mlx3_ib * mlx, struct mlx3_eq* eq)
 
 static int
 reg_eq_irq (struct mlx3_ib * mlx, struct mlx3_eq * eq) {
-
-    if (register_irq_handler(eq->intr_vec, 
+/*
+    if (register_int_handler(HACKED_LEGACY_VECTOR, 
                 eq_irq_handler, 
                 (void*)mlx) != 0) {
         ERROR("Could not register MLX IRQ handler\n");
         return -1; 
     }
 
+	nk_unmask_irq(HACKED_LEGACY_IRQ);
+    // enable interrupts in PCI space
+    uint16_t cmd = pci_dev_cfg_readw(mlx->dev,0x4);
+    cmd &= ~0x0400;
+    pci_dev_cfg_writew(mlx->dev,0x4,cmd);
+*/
+    
+    if (register_irq_handler(HACKED_LEGACY_VECTOR, 
+                eq_irq_handler, 
+                (void*)mlx) != 0) {
+        ERROR("Could not register MLX IRQ handler\n");
+        return -1; 
+    }
+    
     eq->inta_pin = mlx->query_adapter->intapin;
 
     uint64_t clr_base = pci_dev_get_bar_addr(mlx->dev,
@@ -4785,31 +4811,80 @@ reg_eq_irq (struct mlx3_ib * mlx, struct mlx3_eq * eq) {
         mlx->fw_info->clr_base;
 
     // TODO: why is this creation affecting global state?
-    eq->clr_mask = bswap32(1 << (eq->inta_pin ));
-
-    eq->clr_int  = (uint32_t*)(clr_base +
-            (eq->inta_pin < 32 ? 4 : 0));
+    eq->clr_mask = bswap32(1 << (eq->inta_pin )); 
+    eq->clr_int  = (uint32_t*)(clr_base + (eq->inta_pin < 32 ? 4 : 0));
     return 0;
 }
 
 
+static int
+reg_eq_msix_irq (struct mlx3_ib * mlx) {
+
+    if (mlx->dev->msix.type == PCI_MSI_X) {
+	if (pci_dev_enable_msi_x(mlx->dev)) {
+	    ERROR("Failed to enable MSI-X on device...\n");
+	    return -1;
+	}
+    }
+    struct pci_dev *p = mlx->dev;
+    uint64_t num_vecs = p->msix.size;
+    ulong_t vec = 0;
+    uint64_t base_vector = -1;
+    // now fill out the device's MSI-X table
+    for (int i = 0; i < num_vecs; i++) {
+        // find a free vector
+        // note that prioritization here is your problem
+        if (idt_find_and_reserve_range(1,0,&vec)) {
+            ERROR("Cannot get vector...\n");
+            return -1;
+        }
+        // register your handler for that vector
+        if (register_int_handler(vec, eq_irq_handler, (void*)mlx)) {
+            ERROR("Failed to register int handler\n");
+            return -1;
+            // failed....
+        }
+        // set the table entry to point to your handler
+        if (pci_dev_set_msi_x_entry(p,i,vec,0)) {
+            ERROR("Failed to set MSI-X entry\n");
+            return -1;
+        }
+        // and unmask it (device is still masked)
+        if (pci_dev_unmask_msi_x_entry(p,i)) {
+            ERROR("Failed to unmask entry\n");
+            return -1;
+        }
+        DEBUG("Finished setting up entry %d for vector %u on cpu 0\n",i,vec);
+        if (i == 0)
+            base_vector = vec;
+    }
+
+    // unmask entire function
+    if (pci_dev_unmask_msi_x_all(p)) {
+        ERROR("Failed to unmask device\n");
+        return -1;
+    }
+    
+    return base_vector;
+}
 static struct mlx3_eq *
 init_eq (struct mlx3_ib * mlx)
 {
     struct mlx3_eq * eq = NULL;
 	int err = 0;
 
-    eq = create_eq(mlx);
+  //  eq = create_eq(mlx, reg_eq_msix_irq(mlx));
     
+    eq = create_eq(mlx, reg_eq_msix_irq(mlx));
     if (!eq) {
 		ERROR("Create EQ Failed");
 		return NULL;
 	}
-
-    if (reg_eq_irq(mlx, eq)) {
+/*    if (reg_eq_irq(mlx, eq)) {
         ERROR("Could not Register IRQ fo EQ\n");
         goto out_err;
     }
+ */   
     if (map_eq(mlx, eq)) {
         goto out_err;
     }
@@ -5026,9 +5101,9 @@ ib_lid_cpuint16_t(uint32_t lid)
 
 static int 
 mlx3_MAD_IFC(struct mlx3_ib *mlx, int mad_ifc_flags,
-             int port, const struct ib_wc *in_wc,
-             const struct ib_grh *in_grh,
-             const void *in_mad, void *response_mad)
+        int port, const struct ib_wc *in_wc,
+        const struct ib_grh *in_grh,
+        const void *in_mad, void *response_mad)
 {   
     mlx3_cmd_box_t *inmailbox, *outmailbox;
     void *inbox;
@@ -5078,7 +5153,7 @@ mlx3_MAD_IFC(struct mlx3_ib *mlx, int mad_ifc_flags,
         ext_info->rqpn   = bswap32(in_wc->src_qp);
         ext_info->sl     = in_wc->sl << 4;
         ext_info->g_path = in_wc->dlid_path_bits |
-                            (in_wc->wc_flags & IB_WC_GRH ? 0x80 : 0);
+            (in_wc->wc_flags & IB_WC_GRH ? 0x80 : 0);
         ext_info->pkey   = bswap16(in_wc->pkey_index);
 
         if (in_grh)
@@ -5106,6 +5181,46 @@ mlx3_MAD_IFC(struct mlx3_ib *mlx, int mad_ifc_flags,
     return err;
 }
 
+static inline int 
+mlx3_config_mad_demux(struct mlx3_ib * mlx)                                                                                                                                                                                                          
+{
+    DEBUG("Query MAD DEMUX\n");
+    mlx3_cmd_box_t *mailbox;
+    int err;
+
+    /* Check if mad_demux is supported */
+    if (!(mlx->caps->flags & MLX3_DEV_CAP_FLAG2_MAD_DEMUX))
+    {
+        DEBUG("Returning\n");
+        return 0;
+    }
+    mailbox = create_cmd_mailbox(mlx);
+    if (!mailbox) {
+        DEBUG("Failed to allocate mailbox for cmd MAD_DEMUX");
+        return -1;
+    }
+
+    /* Query mad_demux to find out which MADs are handled by internal sma */
+    err = mlx3_mailbox_cmd(mlx, 0, mailbox->buf, 0x01, MLX3_CMD_MAD_DEMUX_QUERY_RESTR, MLX3_CMD_MAD_DEMUX, CMD_TIME_CLASS_A); //smt mgmt class
+
+    if (err) {
+        DEBUG("MLX3_CMD_MAD_DEMUX: query restrictions failed (%d)\n",
+                err);
+        goto out;
+    }
+
+
+    /* Config mad_demux to handle all MADs returned by the query above */
+    err = mlx3_mailbox_cmd(mlx, mailbox->buf, 0, 0x01, MLX3_CMD_MAD_DEMUX_CONFIG, MLX3_CMD_MAD_DEMUX, CMD_TIME_CLASS_A); //smt mgmt class;
+    if (err) {
+        DEBUG( "MLX3_CMD_MAD_DEMUX: configure failed (%d)\n", err);
+        goto out;
+    }
+
+out:
+    destroy_cmd_mailbox(mailbox);
+    return err;
+}
 
 static void 
 init_query_mad (struct ib_smp *mad) 
@@ -5272,12 +5387,12 @@ mlx3_test_completion (struct mlx3_ib* mlx)
 static int
 mlx3_create_special_qp (struct mlx3_ib * mlx)
 {
-#define NUM_SP_QP 2
+#define NUM_SP_QP 8 
     struct mlx3_qp ** qps = mlx->qps;
 
     for (int i = 0; i < NUM_SP_QP; i++) {
 
-        qps[i] = create_qp_with_parms(mlx, mlx->cqs[0], MLX3_TRANS_RAW, 2048, 2048, 1);
+        qps[i] = create_qp_with_parms(mlx, mlx->cqs[0], MLX3_TRANS_RAW, 4096, 4096, 1);
 
         if (!qps[i]) {
             ERROR("Could not create special QP\n");
@@ -5287,7 +5402,7 @@ mlx3_create_special_qp (struct mlx3_ib * mlx)
 
     for (int i = 0; i < NUM_SP_QP; i++) {
         // transition it to RTS 
-        if (mlx3_qp_to_rtr(mlx, qps[i]) != 0) {
+        if (mlx3_qp_to_rts(mlx, qps[i]) != 0) {
             ERROR("QP to RTS Failed\n");
             return -1;
         }
@@ -5298,7 +5413,7 @@ mlx3_create_special_qp (struct mlx3_ib * mlx)
         goto out_err;
     }
 
-    if (mlx3_init_sp_qp(mlx, qps[1], MANAGEMENT_QP) != 0) {
+    if (mlx3_init_sp_qp(mlx, qps[1], SERVICE_QP) != 0) {
         ERROR("Could not init special QP\n");
         goto out_err;
     }
@@ -5460,15 +5575,16 @@ ud_pingpong (struct mlx3_ib * mlx)
 
     int limit = 512 * 1024 * 1024;
     int pkt_size = 1024;
+    void * pkt = malloc(pkt_size + 32);
+    memset(pkt, 0x7a, pkt_size + 32);
+    byte_align(pkt, 32);
     uint64_t start, end, diff;
-    for (int size = 0 ; size < 3 * (64 *1024); size += 64 * 1024) { 
+    for (int size = 0 ; size < 1; size ++) { 
 
-        void * pkt = malloc(pkt_size);
-        memset(pkt, 0x7a, pkt_size);
         struct ib_context * ctx = malloc(sizeof(struct ib_context));
         memset(ctx, 0, sizeof(struct ib_context));
-        ctx->dlid   = 0x21;
-        ctx->slid   = 0x6;
+        ctx->dlid   = 0xe;
+        ctx->slid   = 0x14;
         ctx->user_op = OP_UD_SEND;
         // ctx->sq_size = PAGE_SIZE_4KB ;
         ctx->src_qpn = 64;
@@ -5477,7 +5593,7 @@ ud_pingpong (struct mlx3_ib * mlx)
         mlx3_post_send(mlx, pkt, pkt_size, NULL, ctx);
         end =rdtsc();
         DEBUG("Time Taken Post Send  %d\n", (end - start));
-        free(pkt);
+//        free(pkt);
     } 
     return 0;
 }
@@ -5502,7 +5618,6 @@ init_queue_offsets (struct mlx3_ib * mlx)
     mlx->uar_ind_eq_db = mlx->caps->num_rsvd_eqs / 4;
 }
 
-
 int 
 mlx3_init (struct naut_info * naut) 
 {
@@ -5523,7 +5638,7 @@ mlx3_init (struct naut_info * naut)
             MLX3_DEV_ID, 
             &idev, 
             &max);
-
+    DEBUG("Vendor id %x Device id %x MSIX size %d MSIX Enable Bit %x\n", idev->cfg.vendor_id, idev->cfg.device_id, idev->msix.size, idev->msix.enabled);
     if (ret) {
         DEBUG("No ConnectX-3 found\n");
         return 0;
@@ -5542,7 +5657,7 @@ mlx3_init (struct naut_info * naut)
 
     mlx->uar_start  = pci_dev_get_bar_addr(idev, 2);
     mlx->netdev     = nk_net_dev_register("mlx3-ib", 0, &mlx3_ops, (void*)mlx);
-
+    
     if (!mlx->netdev) {
         ERROR("Could not register mlx3 device\n");
         goto out_err;
@@ -5557,12 +5672,11 @@ mlx3_init (struct naut_info * naut)
         ERROR("Could not reset device\n");
         goto out_err1;
     }
-
+ //   sti();
     // TODO: this shouldn't be necessary if we're properly
     // restoring the config space in reset()
     pci_dev_enable_mmio(idev);
     pci_dev_enable_master(idev);
-
     if (!mlx3_check_ownership(mlx)) {
         ERROR("We don't have card ownership, aborting\n");
         goto out_err1;
@@ -5626,12 +5740,13 @@ mlx3_init (struct naut_info * naut)
         goto out_err;
     }
 
+//    sti();
     mlx->eqs = init_eq_map(mlx, NUM_EQS);
     if (!mlx->eqs) {
         ERROR("Could not create EQ map\n");
         goto hca_err;
     }
-
+    mlx3_test_interrupt(mlx);
     mlx->cqs = init_cq_map(mlx, mlx->eqs[0], NUM_CQS);
     if (!mlx->cqs) {
         ERROR("Could not create CQ map\n");
@@ -5643,17 +5758,15 @@ mlx3_init (struct naut_info * naut)
         ERROR("Could not init QP map\n");
         goto qp_err; 
     }
-
+    //mlx3_config_mad_demux(mlx); 
+    //mlx3_create_special_qp(mlx);
     if (mlx3_init_port(mlx, 1)) {
         ERROR("Could not init port\n");
         goto port_err;
     }
 
-    // wait for the port to come up
-    while (link != 1) {
-        udelay(100);
-    }
 
+   /// mlx3_create_special_qp(mlx);
    
 /**
  * Receive Packet Interface
@@ -5661,16 +5774,17 @@ mlx3_init (struct naut_info * naut)
  */ 
 #if 0 
 
-    void * pkt = malloc (4096);
-    memset(pkt, 0x7a, 4096);
-
+    void * pkt = malloc (4096 + 32);
+    memset(pkt, 0x00, 4096 + 32 );
+    byte_align(pkt, 32);
     struct ib_context * ctx = malloc(sizeof(struct ib_context));
     memset(ctx, 0, sizeof(struct ib_context));
 
-    ctx->dlid   = 0x26;
-    ctx->slid   = 0x21;
-    ctx->opcode = UD_RECV;
-    mlx3_post_receive (mlx, pkt, PAGE_SIZE_4KB, NULL, ctx);
+    ctx->dlid   = 0x14;
+    ctx->slid   = 0xe;
+    ctx->src_qpn = 64;
+    ctx->user_op = OP_UD_RECV;
+    mlx3_post_receive (mlx, pkt, 4096, NULL, ctx);
     //mlx3_rcv_pkt(mlx, mlx->cqs[0] , MLX3_UC);
 #endif
 
@@ -5681,13 +5795,12 @@ mlx3_init (struct naut_info * naut)
 #if 1 
     ud_pingpong(mlx);
 #endif
-
-    DEBUG("ConnectX3 up and running...\n");
+    DEBUG("PXE ConnectX3 up and running...\n");
 
     while (1) {
         udelay(600000);
         //dump_packet(mlx, (void*)(0x3fa1c000), 512); 
-        //mlx3_ib_query_qp(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, 64)]);
+        mlx3_ib_query_qp(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, 64)]);
         //mlx3_query_port(mlx, 1, mlx->port_cap, 1);  
     }
 

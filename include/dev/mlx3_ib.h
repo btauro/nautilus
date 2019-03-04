@@ -147,7 +147,9 @@
 
 #define CQE_SIZE 32
 
-#define IRQ_NUMBER   11
+
+#define HACKED_LEGACY_VECTOR 11 
+#define HACKED_LEGACY_IRQ    (HACKED_LEGACY_VECTOR - 32)
 
 /* utility functions... the card is big-endian */
 
@@ -1723,6 +1725,15 @@ enum
     MLX3_CMD_MAD_DEMUX       = 0x203,
 
 };
+
+
+enum {                                                                                                                                                                                                                                                    
+    MLX3_CMD_MAD_DEMUX_CONFIG   = 0,
+    MLX3_CMD_MAD_DEMUX_QUERY_STATE  = 1,
+    MLX3_CMD_MAD_DEMUX_QUERY_RESTR  = 2, /* Query mad demux restrictions */
+};
+
+
 enum mlx3_qp_state {
     MLX3_QP_STATE_RST                       = 0,
     MLX3_QP_STATE_INIT                      = 1,
