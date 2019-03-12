@@ -297,8 +297,8 @@ static void pci_msi_x_detect(struct pci_dev *d)
     return;
   }
   
-  void *table_start = pci_msi_x_get_bar_start(d,table_bar_num);
-  void *pba_start = pci_msi_x_get_bar_start(d,pba_bar_num);
+  void *table_start = pci_get_bar_addr(d,table_bar_num);
+  void *pba_start = pci_get_bar_addr(d,pba_bar_num);
 
   PCI_DEBUG("table_start=%p pba_start=%p\n",table_start,pba_start);
 

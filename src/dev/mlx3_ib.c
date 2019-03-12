@@ -59,7 +59,7 @@ byte_align(void* buffer, uint32_t byte)
     DEBUG("Alignment %p \n", buffer);
     // Align address to 32 byte Might waste some buffer space 
     while ((((uint64_t)buffer & (byte - 1)))) {
-        DEBUG("Alignment Buffer %p \n", buffer);
+//        DEBUG("Alignment Buffer %p \n", buffer);
         buffer++; 
     }
     return buffer;
@@ -3199,7 +3199,7 @@ create_eq (struct mlx3_ib * mlx, uint64_t base_vector)
 
     ctx->flags       = bswap32(MLX3_EQ_STATUS_OK | MLX3_EQ_STATE_ARMED);
     ctx->log_eq_size = ilog2(eq->nentry);
-//    ctx->intr = base_vector;
+    ctx->intr = base_vector;
     ctx->log_page_size   = PAGE_SHIFT_4KB - MLX3_ICM_PAGE_SHIFT;
     ctx->mtt_base_addr_h = ((uint64_t)eq->mtt) >> 32;
     ctx->mtt_base_addr_l = bswap32(((uint64_t)eq->mtt) & 0xffffffffu);
@@ -3740,10 +3740,10 @@ mlx3_attach_rq (struct mlx3_ib * mlx, struct mlx3_qp * qp, int size, int stride,
 	ring->size        = size / ring->wqe_size; // size in WQEs
 	ring->log_stride  = ilog2(stride);
 	ring->buf         = buf_start; //SQE =2048 RQE Remaining 2048
-	ring->buf_size    = size; // same as actual_siz
+    ring->buf_size    = size; // same as actual_siz
     ring->db_rec      = qp->db_rec;
 	memset(ring->buf, 0, size);
-    
+    DEBUG("Receive Buffer Addr %p\n", ring->buf); 
 	mlx3_init_rwq(mlx, ring);
 
 	mlx3_fill_rx_buffers(mlx, ring);
@@ -3788,7 +3788,7 @@ mlx3_fill_qp_ctx (struct mlx3_ib * mlx, struct mlx3_qp * qp)
 
 	qp->ctx->flags      = bswap32(qp->tp_cx << 16 | (0x3 << 11) | 0x1); // Transport type and set 3 if Alternate path migration not supported
 	// TODO: MTU should depend on transport type
-	qp->ctx->mtu_msgmax = 0xb4;
+	qp->ctx->mtu_msgmax = 0xbe;
     if (qp->rx != NULL) {
 		qp->ctx->rq_size_stride = ilog2(qp->rx->size) << 3     | (qp->rx->log_stride) ;
     }
@@ -3803,14 +3803,15 @@ mlx3_fill_qp_ctx (struct mlx3_ib * mlx, struct mlx3_qp * qp)
 	//0 -127 EQ UAR Dorbells next followed index can be used  
 	qp->ctx->usr_page        = bswap32(mlx3_to_hw_uar_index(mlx, qp->uar));
 	qp->ctx->local_qpn       = bswap32(qp->qpn);
-	qp->ctx->db_rec_addr     = bswap64(((uint64_t)qp->db_rec << 2));
-    DEBUG("DB Rec %p  BSWAP 64 %p Db rec %p\n", qp->ctx->db_rec_addr, bswap64((uint64_t)qp->db_rec), qp->db_rec);
+    qp->ctx->db_rec_addr     = bswap64(((uint64_t)qp->db_rec));
+    DEBUG("DB Rec %p  BSWAP 64 %p Db rec after shift %p\n", qp->ctx->db_rec_addr, bswap64((uint64_t)qp->db_rec), qp->db_rec);
     qp->ctx->mtt_base_addr_h = (uint64_t)qp->buf->mtt >> 32;
     qp->ctx->mtt_base_addr_l = bswap32((uint64_t)qp->buf->mtt & 0xffffffff);
     qp->ctx->log_page_size   = PAGE_SHIFT_4KB - MLX3_ICM_PAGE_SHIFT;
     qp->ctx->pri_path.sched_queue        = 0x83 | ((port - 1) << 6);
     if (qp->is_sqp) {
         qp->ctx->qkey = bswap32(0x80010000);
+        qp->ctx->mtu_msgmax = 5 << 5 | 12;
     }
 
 	return 0;
@@ -4232,6 +4233,7 @@ mlx3_create_qp (struct mlx3_ib * mlx,
 		(sq_bb_sz >= rq_wqe_sz) ? qp->buf->data : (qp->buf->data + parms->rq_size));
 
     if (parms->rq_size != 0) {
+        DEBUG("RQ\n");
         mlx3_attach_rq(mlx, qp, parms->rq_size, parms->rq_stride,
 		(sq_bb_sz >= rq_wqe_sz) ? (qp->buf->data + parms->sq_size) : qp->buf->data, qp->db_rec);
     }
@@ -4723,7 +4725,7 @@ mlx3_init_port (struct mlx3_ib * mlx, int port)
 
     // wait for the port to come up
     while (link != 1) {
-        udelay(10);
+//        udelay(10);
     }
 
 
@@ -5621,6 +5623,7 @@ init_queue_offsets (struct mlx3_ib * mlx)
 int 
 mlx3_init (struct naut_info * naut) 
 {
+    udelay(15845);    
     struct mlx3_init_hca_param init_hca;
     struct pci_dev * idev = NULL;
     struct mlx3_ib * mlx  = NULL;
@@ -5798,9 +5801,9 @@ mlx3_init (struct naut_info * naut)
     DEBUG("PXE ConnectX3 up and running...\n");
 
     while (1) {
-        udelay(600000);
+//        udelay(600000);
         //dump_packet(mlx, (void*)(0x3fa1c000), 512); 
-        mlx3_ib_query_qp(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, 64)]);
+ //       mlx3_ib_query_qp(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, 64)]);
         //mlx3_query_port(mlx, 1, mlx->port_cap, 1);  
     }
 
