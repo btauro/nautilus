@@ -2933,7 +2933,7 @@ mlx3_cq_completion (struct mlx3_ib* mlx, uint32_t cqn)
     
         if (!(cqe->owner_sr_opcode & 0x40)) {
             mlx3_ib_query_qp(mlx, mlx->qps[qpn_offset]);
-            dump_qp(mlx, mlx->qps[qpn_offset]);
+     //       dump_qp(mlx, mlx->qps[qpn_offset]);
         }
         
         ++cq->cons_index;
@@ -4060,7 +4060,7 @@ mlx3_create_cq (struct mlx3_ib * mlx,
     cq->arm_sn              = 1;
     cq->cons_index          = 0;
 
-    ctx->db_rec_addr = bswap64((uint64_t)db_rec << 2);
+    ctx->db_rec_addr = bswap64((uint64_t)db_rec);
  
     err = mlx3_SW2HW_CQ(mlx, mailbox, cq->cqn);
 
@@ -4722,12 +4722,12 @@ mlx3_init_port (struct mlx3_ib * mlx, int port)
         mlx3_query_port(mlx, 1, mlx->port_cap, 0);  
     } 
     
-
+/*
     // wait for the port to come up
     while (link != 1) {
 //        udelay(10);
     }
-
+*/
 
     DEBUG("PORT INITIALIZED\n");
 
@@ -5400,6 +5400,8 @@ mlx3_create_special_qp (struct mlx3_ib * mlx)
             ERROR("Could not create special QP\n");
             goto out_err;
         }
+
+        qps[i]->ctx->rlkey_roce_mode = 1 << 4; // This qp can use reserved Lkey
     }
 
     for (int i = 0; i < NUM_SP_QP; i++) {
@@ -5419,6 +5421,7 @@ mlx3_create_special_qp (struct mlx3_ib * mlx)
         ERROR("Could not init special QP\n");
         goto out_err;
     }
+
     return 0;
 out_err:
     return -1;
@@ -5623,7 +5626,6 @@ init_queue_offsets (struct mlx3_ib * mlx)
 int 
 mlx3_init (struct naut_info * naut) 
 {
-    udelay(15845);    
     struct mlx3_init_hca_param init_hca;
     struct pci_dev * idev = NULL;
     struct mlx3_ib * mlx  = NULL;
@@ -5761,21 +5763,18 @@ mlx3_init (struct naut_info * naut)
         ERROR("Could not init QP map\n");
         goto qp_err; 
     }
-    //mlx3_config_mad_demux(mlx); 
-    //mlx3_create_special_qp(mlx);
+    mlx3_config_mad_demux(mlx); 
+ //   mlx3_create_special_qp(mlx);
     if (mlx3_init_port(mlx, 1)) {
         ERROR("Could not init port\n");
         goto port_err;
     }
 
-
-   /// mlx3_create_special_qp(mlx);
-   
 /**
  * Receive Packet Interface
  * For recv the src and dest lids will exchange
  */ 
-#if 0 
+#if 1 
 
     void * pkt = malloc (4096 + 32);
     memset(pkt, 0x00, 4096 + 32 );
@@ -5795,7 +5794,7 @@ mlx3_init (struct naut_info * naut)
  *Send Packet Interface UUser only knows to know about the destination lid and opcode
  * For raw packets you need to build the packet before post send an UD exaple is implemented in  mlx3_build_raw_pkt()  
  */
-#if 1 
+#if 0 
     ud_pingpong(mlx);
 #endif
     DEBUG("PXE ConnectX3 up and running...\n");
