@@ -57,7 +57,7 @@
 #define RQ_STRIDE_DEFAULT 16
 #define QKEY_DEFAULT        0x0000000011111111
 #define PORT_DEFAULT        1 
-#define DQPN_DEFAULT        64 
+#define DQPN_DEFAULT        72 
 #define SQ_SIZE_DEFAULT     2048 
 #define RQ_SIZE_DEFAULT     2048 
 #define MLX_TRANSPORT 0x7

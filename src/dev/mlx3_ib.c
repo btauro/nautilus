@@ -3233,7 +3233,7 @@ destroy_eq (struct mlx3_eq * eq)
 
 
 static int 
-mlx3_CONF_SPECIAL_QP (struct mlx3_ib * mlx, uint32_t base_qpn, int qp_type)
+mlx3_CONF_SPECIAL_QP (struct mlx3_ib * mlx, uint32_t base_qpn, int qp_type, int opmod)
 {
 	mlx3_cmd_box_t * cmd = create_cmd_mailbox(mlx);
     
@@ -3252,7 +3252,7 @@ mlx3_CONF_SPECIAL_QP (struct mlx3_ib * mlx, uint32_t base_qpn, int qp_type)
                             0,
                             0,
                             inmod,
-                            0,
+                            opmod,
                             CMD_CONF_SPECIAL_QP,
                             CMD_TIME_CLASS_A);
 
@@ -4722,12 +4722,12 @@ mlx3_init_port (struct mlx3_ib * mlx, int port)
         mlx3_query_port(mlx, 1, mlx->port_cap, 0);  
     } 
     
-/*
+
     // wait for the port to come up
     while (link != 1) {
 //        udelay(10);
     }
-*/
+
 
     DEBUG("PORT INITIALIZED\n");
 
@@ -4736,7 +4736,7 @@ mlx3_init_port (struct mlx3_ib * mlx, int port)
 
 
 static int
-mlx3_init_sp_qp (struct mlx3_ib * mlx, struct mlx3_qp * sqp, int qp_type)
+mlx3_init_sp_qp (struct mlx3_ib * mlx, struct mlx3_qp * sqp, int qp_type, int opmod)
 {
     int reserved_from_top = 0;
     int reserved_from_bot;
@@ -4747,7 +4747,7 @@ mlx3_init_sp_qp (struct mlx3_ib * mlx, struct mlx3_qp * sqp, int qp_type)
     DEBUG("Initializing special QP\n");
 
     // NOTE: Receive Side Scaling (Windows)/Receive Core Affinity(Linux) not considered for now
-    if (mlx3_CONF_SPECIAL_QP(mlx, sqp->qpn, qp_type) != 0) {	
+    if (mlx3_CONF_SPECIAL_QP(mlx, sqp->qpn, qp_type, opmod) != 0) {	
         ERROR("Could not conf special QP\n");
         return -1;
     }
@@ -5412,16 +5412,16 @@ mlx3_create_special_qp (struct mlx3_ib * mlx)
         }
     }
     // Qp Type 0 Management Qp 1 Service Qp
-    if (mlx3_init_sp_qp(mlx, qps[0], MANAGEMENT_QP) != 0) {
+    if (mlx3_init_sp_qp(mlx, qps[0], MANAGEMENT_QP, 1) != 0) {
         ERROR("Could not init special QP\n");
         goto out_err;
     }
-
+/*
     if (mlx3_init_sp_qp(mlx, qps[1], SERVICE_QP) != 0) {
         ERROR("Could not init special QP\n");
         goto out_err;
     }
-
+*/
     return 0;
 out_err:
     return -1;
@@ -5592,7 +5592,8 @@ ud_pingpong (struct mlx3_ib * mlx)
         ctx->slid   = 0x14;
         ctx->user_op = OP_UD_SEND;
         // ctx->sq_size = PAGE_SIZE_4KB ;
-        ctx->src_qpn = 64;
+        ctx->src_qpn = 72;
+        ctx->dst_qpn = 72;
         // TODO BRIAN: For some reason packet above 2k causing send to fail
         start = rdtsc();
         mlx3_post_send(mlx, pkt, pkt_size, NULL, ctx);
@@ -5764,7 +5765,7 @@ mlx3_init (struct naut_info * naut)
         goto qp_err; 
     }
     mlx3_config_mad_demux(mlx); 
- //   mlx3_create_special_qp(mlx);
+    mlx3_create_special_qp(mlx);
     if (mlx3_init_port(mlx, 1)) {
         ERROR("Could not init port\n");
         goto port_err;
@@ -5784,7 +5785,7 @@ mlx3_init (struct naut_info * naut)
 
     ctx->dlid   = 0x14;
     ctx->slid   = 0xe;
-    ctx->src_qpn = 64;
+    ctx->src_qpn = 72;
     ctx->user_op = OP_UD_RECV;
     mlx3_post_receive (mlx, pkt, 4096, NULL, ctx);
     //mlx3_rcv_pkt(mlx, mlx->cqs[0] , MLX3_UC);
