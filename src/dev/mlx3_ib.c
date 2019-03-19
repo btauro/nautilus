@@ -33,11 +33,10 @@
 #include <dev/pci.h>
 #include <dev/mlx3_ib.h>
 #include <nautilus/irq.h>
-
+#include <nautilus/timer.h>           // nk_sleep(ns);
 #ifndef NAUT_CONFIG_DEBUG_MLX3_PCI
 #undef DEBUG_PRINT
 #define DEBUG_PRINT(fmt, args...)
-#define ERROR(fmt, args...)    ERROR_PRINT("e1000e_pci: " fmt, ##args)
 #endif
 
 
@@ -257,7 +256,7 @@ mlx3_mailbox_cmd_post_in (struct mlx3_ib * m,
 		int event)
 {
 	while (cmd_pending(m)) {
-		udelay(1000);
+//		udelay(1);
 	}
 
 	WRITE_MEM(m, MLX_HCR_BASE,      bswap32(((uint32_t)(in_param >> 32))));
@@ -296,7 +295,7 @@ mlx3_mailbox_cmd_post (struct mlx3_ib * m,
 		int event)
 {
 	while (cmd_pending(m)) {
-		udelay(1000);
+	//	udelay(100);
 	}
 
 	WRITE_MEM(m, MLX_HCR_BASE,      bswap32(((uint32_t)(in_param >> 32))));
@@ -348,7 +347,7 @@ mlx3_mailbox_cmd_poll_in (struct mlx3_ib * m,
 	}
 
 	while (cmd_pending(m)) {
-		udelay(100);
+//		udelay(100);
 	}
 
 	if (out_is_imm) {
@@ -416,7 +415,7 @@ mlx3_mailbox_cmd_poll (struct mlx3_ib * m,
 	}
 
 	while (cmd_pending(m)) {
-		udelay(100);
+//		udelay(100);
 	}
 
 	if (out_is_imm) {
@@ -974,7 +973,7 @@ mlx3_alloc_cqn (struct mlx3_ib * mlx)
 }
 
 
-static inline int
+static inline int 
 mlx3_alloc_eqn (struct mlx3_ib * mlx)
 {
     return mlx->nt_rsvd_eqn++;
@@ -1067,7 +1066,8 @@ mlx3_dump_dev_cap (struct mlx3_dev_cap * cap)
 //	DEBUG("Supported device features:\n");
 
 	dump_dev_cap_flags1(cap->flags >> 32);
-	dump_dev_cap_flags2(cap->flags & 0xffffffffu);
+	
+    dump_dev_cap_flags2(cap->flags & 0xffffffffu);
 }
 
 
@@ -2361,6 +2361,28 @@ to_ib_qp_state (enum mlx3_qp_state mlx3_state)
 
 
 static int
+mlx3_qp_query_op (struct mlx3_ib * mlx, struct mlx3_qp_context * context, int qpn, mlx3_cmd_box_t * mailbox)
+{
+    int err;
+
+    err = mlx3_mailbox_cmd(mlx, 0, mailbox->buf, qpn, 0,
+            MLX3_CMD_QUERY_QP, CMD_TIME_CLASS_A);
+
+    if (err) {
+        ERROR("Could not query QP\n");
+        goto out_err;
+    }
+
+    memcpy(context, (void *)(mailbox->buf + 8), sizeof(*context));
+
+    return 0;
+
+out_err:
+    return -1;
+}
+
+
+static int
 mlx3_qp_query (struct mlx3_ib * mlx, struct mlx3_qp_context * context, int qpn)
 {
     mlx3_cmd_box_t * mailbox = NULL;
@@ -2392,6 +2414,19 @@ out_err:
 }
 
 
+
+static void 
+get_qp_counters (struct mlx3_ib * mlx, struct mlx3_qp * qp, struct mlx3_qp_context * context, mlx3_cmd_box_t * mailbox)
+{
+    int err;
+
+    err = mlx3_qp_query_op(mlx, context, qp->qpn, mailbox);
+
+    if (err) {
+        ERROR("QUERY QP failed with err %d in %s\n", err, __func__);
+    }
+}
+    
 static int
 get_qp_send_counter (struct mlx3_ib * mlx, struct mlx3_qp * qp)
 {
@@ -2821,6 +2856,7 @@ mlx3_alloc_data (struct mlx3_ib * mlx,
                  struct mlx3_rx_ring * ring,
                  struct mlx3_rx_desc * rxd)
 {
+    DEBUG("ALLOC DATA\n");
 #define FRAG_SIZE PAGE_SIZE_4KB 
     void * frag = malloc(FRAG_SIZE);
     if (!frag) {
@@ -2828,22 +2864,23 @@ mlx3_alloc_data (struct mlx3_ib * mlx,
         return -1;
     }
     memset(frag, 0, FRAG_SIZE);
+   // create_memory_region(mlx, FRAG_SIZE, frag);
     rxd->data[0].lkey       = bswap32(mlx->caps->resd_lkey); 
-    
+   // rxd->data[0].lkey = bswap32(mlx->mr_table.dmpt->key);
     rxd->data[0].addr       = bswap64((uint64_t)frag);
-    barrier();
+    barrier(); 
     rxd->data[0].byte_count = bswap32(FRAG_SIZE);
 
     DEBUG("MR ADDR %x Byte Count %d LKey 0x%08x\n", (uint64_t)frag, bswap32(FRAG_SIZE), mlx->mr_table.dmpt->key);
-    
+
     return 0;
 }
 
 
 static inline int 
 mlx3_prepare_rx_desc (struct mlx3_ib * mlx, 
-					  struct mlx3_rx_ring * ring, 
-					  int idx)
+        struct mlx3_rx_ring * ring, 
+        int idx)
 {
     struct mlx3_rx_desc * rxd = ring->buf + (idx * ring->wqe_size);
     return mlx3_alloc_data(mlx, ring, rxd);
@@ -2875,12 +2912,11 @@ mlx3_get_qpn_offset (struct mlx3_ib * mlx, int qpn) {
 }
 
 volatile uint64_t send_start = 0;
+volatile uint64_t recv = 0;
 static void 
 mlx3_cq_completion (struct mlx3_ib* mlx, uint32_t cqn)
 {
     
-    volatile uint64_t end = 0;
-    end = rdtsc();
     int cqn_offset = mlx3_get_cqn_offset(mlx, cqn);
     struct mlx3_cq * cq = mlx->cqs[cqn_offset];
     struct mlx3_cqe * cqe = NULL;
@@ -2889,24 +2925,16 @@ mlx3_cq_completion (struct mlx3_ib* mlx, uint32_t cqn)
     int qpn_offset = 0;
     int byte_count = -1;
     uint16_t dlid;
-    if (cq->cqn != cqn) {
-        ERROR("Completion event for bogus CQ %d CQN %d CQ Enteries %d  CQ Offset %d\n", cqn, cq->cqn, cq->nentry, cqn_offset);
-        return;
-    }
 
     cqe = next_cqe_sw(cq);
 
-    while (cqe) {
+  //  while (cqe) {
 
         if (!cqe) {
             DEBUG("No valid CQEs present\n");
             return;
         }
-
-        if ((cqe->owner_sr_opcode & 0x40)) { 
-            end = rdtsc();
-            DEBUG("Time For Send Completion %d Send Start %d Send End %d\n", (end - send_start), send_start, end); 
-        }
+#if 0 
         opcode     = cqe->owner_sr_opcode & 0x1f;
         qpn        = (bswap32(cqe->vlan_my_qpn) & 0xffffff);
         qpn_offset = mlx3_get_qpn_offset(mlx, qpn);
@@ -2931,22 +2959,18 @@ mlx3_cq_completion (struct mlx3_ib* mlx, uint32_t cqn)
             DEBUG("  [Vendor error syndrome : 0x%02x]\n", vsynd);
         }
     
-        if (!(cqe->owner_sr_opcode & 0x40)) {
-            mlx3_ib_query_qp(mlx, mlx->qps[qpn_offset]);
-     //       dump_qp(mlx, mlx->qps[qpn_offset]);
-        }
-        
-        ++cq->cons_index;
-        cq_set_ci(cq);
+#endif
+      //  ++cq->cons_index;
+       // cq_set_ci(cq);
 
         // Make sure hardware sees the consumer index value
-        if (!(cqe->owner_sr_opcode & 0x40)) {
-             mlx3_refill_rx_buffers(mlx, mlx->qps[qpn_offset]->rx);
-        }
-        cqe = next_cqe_sw(cq);
-    } 
-    ++cq->arm_sn;
-    mlx3_cq_arm(cq, MLX3_CQ_DB_REQ_NOT, (uint32_t*)cq->uar, cq->cons_index);
+      //  if (!(cqe->owner_sr_opcode & 0x40)) {
+     //        mlx3_refill_rx_buffers(mlx, mlx->qps[qpn_offset]->rx);
+        //}
+    //    cqe = next_cqe_sw(cq);
+  //  } 
+   ++cq->arm_sn;
+   mlx3_cq_arm(cq, MLX3_CQ_DB_REQ_NOT, (uint32_t*)cq->uar, cq->cons_index);
 }
 
 
@@ -2964,7 +2988,7 @@ eq_irq_handler (excp_entry_t * et, excp_vec_t ev, void * state)
 	int port;
 	int cqn;
     int qpn;
-
+    //DEBUG("IRQ\n");
 	writel(eq->clr_mask, eq->clr_int);
     
     while ((eqe = next_eqe_sw(eq, eqe_factor, EQE_SIZE))) {
@@ -3196,7 +3220,8 @@ create_eq (struct mlx3_ib * mlx, uint64_t base_vector)
     }
 
     __mzero_checked(ctx, sizeof(struct mlx3_eq_context), "Could not allocate EQ context entry\n", goto out_err1);
-
+//    ctx->eq_period = 200;
+  //  ctx->eq_max_count = 100;
     ctx->flags       = bswap32(MLX3_EQ_STATUS_OK | MLX3_EQ_STATE_ARMED);
     ctx->log_eq_size = ilog2(eq->nentry);
     ctx->intr = base_vector;
@@ -3511,11 +3536,12 @@ build_mlx_ud_wqe (struct mlx3_ib * mlx,
     tx_desc->ud_ctrl.dst_qpn       = bswap32(dst_qpn);
     tx_desc->ud_ctrl.qkey       = bswap32(qkey); 
     /* UD Segment */
-    tx_desc->data.lkey          = bswap32(mlx->caps->resd_lkey);
+     tx_desc->data.lkey          = bswap32(mlx->caps->resd_lkey);
 //    tx_desc->data.lkey = bswap32(mlx->mr_table.dmpt->key);
     tx_desc->data.addr          = bswap64((uint64_t)pkt);
-    barrier();
-    tx_desc->data.byte_count    = bswap32(pkt_size);
+//    barrier();
+    tx_desc->data.byte_count    = bswap32(pkt_size | 0 << 31);
+    DEBUG("PKT SIZE %ld\n", bswap32(pkt_size));
     return 0;
 }
 
@@ -3788,17 +3814,17 @@ mlx3_fill_qp_ctx (struct mlx3_ib * mlx, struct mlx3_qp * qp)
 
 	qp->ctx->flags      = bswap32(qp->tp_cx << 16 | (0x3 << 11) | 0x1); // Transport type and set 3 if Alternate path migration not supported
 	// TODO: MTU should depend on transport type
-	qp->ctx->mtu_msgmax = 0xbe;
+//	qp->ctx->mtu_msgmax = 0xbe;
     if (qp->rx != NULL) {
 		qp->ctx->rq_size_stride = ilog2(qp->rx->size) << 3     | (qp->rx->log_stride) ;
     }
 	
 	if (qp->tx != NULL) {
-		qp->ctx->sq_size_stride = ilog2(qp->tx->bb_count) << 3 | (qp->tx->log_stride) | (1 << 7);	    
+		qp->ctx->sq_size_stride = ilog2(qp->tx->bb_count) << 3 | (qp->tx->log_stride) | (0 << 7);	    
     } 
     qp->ctx->params2        |= bswap32(MLX3_QP_BIT_FPP);    
     qp->ctx->cqn_send       = bswap32(qp->cq->cqn);
-	qp->ctx->cqn_recv       = bswap32(qp->cq->cqn);
+    qp->ctx->cqn_recv       = bswap32(qp->cq->cqn);
 
 	//0 -127 EQ UAR Dorbells next followed index can be used  
 	qp->ctx->usr_page        = bswap32(mlx3_to_hw_uar_index(mlx, qp->uar));
@@ -3813,8 +3839,10 @@ mlx3_fill_qp_ctx (struct mlx3_ib * mlx, struct mlx3_qp * qp)
         qp->ctx->qkey = bswap32(0x80010000);
         qp->ctx->mtu_msgmax = 5 << 5 | 12;
     }
-
-	return 0;
+    else
+        qp->ctx->mtu_msgmax = 5 << 5 | 13;
+	
+    return 0;
 }
 
 static int 
@@ -4030,7 +4058,7 @@ mlx3_create_cq (struct mlx3_ib * mlx,
     }
 
     ctx = (struct mlx3_cq_context *)mailbox->buf;
-  //  ctx->flags          |= bswap32(1 << 18);
+    ctx->flags          |= bswap32(1 << 18);
     ctx->logsize_usrpage = bswap32((ilog2(nent) << 24) | mlx3_to_hw_uar_index(mlx, cq->uar_idx));
     ctx->comp_eqn        = eq ? eq->eqn : 0;
     ctx->log_page_size   = PAGE_SHIFT_4KB - MLX3_ICM_PAGE_SHIFT;
@@ -4411,6 +4439,7 @@ static void bf_copy(uint64_t *dst, uint64_t *src,
         dst[i] =  src[i];
 }
 
+static volatile uint64_t scs = 0;
 static int
 build_wqe (struct mlx3_ib * mlx, 
            struct mlx3_qp * qp, 
@@ -4428,6 +4457,7 @@ build_wqe (struct mlx3_ib * mlx,
     struct mlx3_tx_raw * tx_desc    = NULL;
     struct mlx3_wqe_ctrl_seg * ctrl = NULL;
     int send_counter                = get_qp_send_counter(mlx, qp);
+//    int send_counter                = scs;
     void * buf_start                = NULL;
 
     ctrl = (((send_counter * qp->tx->bb_size)) % qp->tx->buf_size) + qp->tx->buf;  
@@ -4443,6 +4473,7 @@ build_wqe (struct mlx3_ib * mlx,
             ERROR("RC SEND IMMEDIATE NOT SUPPORTED!\n");
             return -1;
         case OP_UC_SEND:
+            DEBUG("Packet Size %d With Dkey\n", pkt_size);
             build_mlx_uc_wqe(mlx, (void*)ctrl, pkt, pkt_size);
             barrier();
             ctrl->owner_opcode = bswap32((MLX3_OPCODE_SEND) | ((qp->tx->valid) << 31));
@@ -4451,6 +4482,7 @@ build_wqe (struct mlx3_ib * mlx,
             ERROR("UC SEND IMMEDIATE NOT SUPPORTED!\n");
             return -1;
         case OP_UD_SEND:
+            DEBUG("Packet Size %d\n", pkt_size);
             build_mlx_ud_wqe(mlx, (void*)ctrl, port, pkt, dst_qpn, qkey, pkt_size, slid, dlid);
             barrier();
             ctrl->owner_opcode = bswap32((MLX3_OPCODE_SEND) | ((qp->tx->valid) << 31));
@@ -4614,9 +4646,9 @@ fixup_ib_context (struct ib_context * ctx)
 static int
 send_using_bf(struct mlx3_ib * mlx, struct mlx3_qp * qp)
 {
-
     struct mlx3_wqe_ctrl_seg * ctrl = NULL;
-    int send_counter                = get_qp_send_counter(mlx, qp);
+//    int send_counter                = get_qp_send_counter(mlx, qp);
+    int send_counter                = scs;
     ctrl = (((send_counter * qp->tx->bb_size)) % qp->tx->buf_size) + qp->tx->buf;  
     ctrl->vlan_cv_f_ds  =  bswap32((qp->qpn << 8) | (sizeof(struct  mlx3_tx_ud_desc) / 16)) ; // size in 16 bytes
     ctrl->owner_opcode |= bswap32(send_counter << 8);
@@ -4630,6 +4662,7 @@ mlx3_post_send (void * state,
                 void (*callback)(nk_net_dev_status_t, void *),
                 void * context) 
 {
+    recv = 0;
     struct mlx3_ib * mlx    = (struct mlx3_ib *)state;
     struct ib_context * ctx = (struct ib_context *) context;
     struct mlx3_qp * qp     = NULL;
@@ -4642,10 +4675,9 @@ mlx3_post_send (void * state,
     }
 
     build_wqe(mlx, qp, ctx->user_op, ctx->port, src, len, ctx->dst_qpn, ctx->qkey, ctx->dlid, ctx->slid, ctx->va, ctx->rkey);
-
-    barrier();
-    send_wqe(qp); 
-    //send_using_bf(mlx, qp);    
+//    barrier();
+ //   send_wqe(qp); 
+    send_using_bf(mlx, qp);    
     send_start = rdtsc();
     return 0;
 
@@ -4729,7 +4761,7 @@ mlx3_init_port (struct mlx3_ib * mlx, int port)
     }
 
 
-    DEBUG("PORT INITIALIZED\n");
+    printk("PORT INITIALIZED\n");
 
     return 0;
 }
@@ -4875,18 +4907,19 @@ init_eq (struct mlx3_ib * mlx)
     struct mlx3_eq * eq = NULL;
 	int err = 0;
 
-  //  eq = create_eq(mlx, reg_eq_msix_irq(mlx));
+ //     eq = create_eq(mlx, HACKED_LEGACY_VECTOR);
     
     eq = create_eq(mlx, reg_eq_msix_irq(mlx));
     if (!eq) {
 		ERROR("Create EQ Failed");
 		return NULL;
 	}
-/*    if (reg_eq_irq(mlx, eq)) {
+/*
+    if (reg_eq_irq(mlx, eq)) {
         ERROR("Could not Register IRQ fo EQ\n");
         goto out_err;
     }
- */   
+*/ 
     if (map_eq(mlx, eq)) {
         goto out_err;
     }
@@ -5573,37 +5606,111 @@ free_icm_tables (struct mlx3_ib * mlx)
 }
 
 
-int
-ud_pingpong (struct mlx3_ib * mlx)
+static inline int
+r_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
 {
 
-
-    int limit = 512 * 1024 * 1024;
-    int pkt_size = 1024;
-    void * pkt = malloc(pkt_size + 32);
-    memset(pkt, 0x7a, pkt_size + 32);
+    void * pkt = malloc (4096);
+    memset(pkt, 0x00, 4096);
     byte_align(pkt, 32);
-    uint64_t start, end, diff;
-    for (int size = 0 ; size < 1; size ++) { 
+    int pkt_size = 4096;
+    struct ib_context * ctx = malloc(sizeof(struct ib_context));
+    memset(ctx, 0, sizeof(struct ib_context));
+#if 0 
+    ctx->slid   = 0x2;
+    ctx->dlid   = 0x3;
+#endif
 
-        struct ib_context * ctx = malloc(sizeof(struct ib_context));
-        memset(ctx, 0, sizeof(struct ib_context));
-        ctx->dlid   = 0xe;
-        ctx->slid   = 0x14;
-        ctx->user_op = OP_UD_SEND;
-        // ctx->sq_size = PAGE_SIZE_4KB ;
-        ctx->src_qpn = 72;
-        ctx->dst_qpn = 72;
-        // TODO BRIAN: For some reason packet above 2k causing send to fail
-        start = rdtsc();
-        mlx3_post_send(mlx, pkt, pkt_size, NULL, ctx);
-        end =rdtsc();
-        DEBUG("Time Taken Post Send  %d\n", (end - start));
-//        free(pkt);
-    } 
-    return 0;
+#if 1 
+    ctx->slid   = 0xe;
+    ctx->dlid   = 0x14;
+#endif
+
+    ctx->src_qpn = 64;
+    ctx->dst_qpn = 64;
+    ctx->rq_size = PAGE_SIZE_4KB * 128;
+    ctx->sq_size = PAGE_SIZE_4KB;
+    ctx->user_op = user_op;
+    mlx3_post_receive (mlx, pkt, 4096, NULL, ctx);
+    //mlx3_rcv_pkt(mlx, mlx->cqs[0] , MLX3_UC);
+    //create_memory_region(mlx, 4096, pkt);
+    struct mlx3_qp_context * context = NULL;
+    int pksize = 2048;
+    mzero_checked(context, sizeof(struct mlx3_qp_context), "QP context skeleton");
+    mlx3_cmd_box_t * mailbox = create_cmd_mailbox(mlx);
+    while (1) {
+        get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
+        while ((scs = bswap16(context->sq_wqe_counter)) != bswap16(context->rq_wqe_counter)) {
+            ctx->user_op = user_op - 1;
+            mlx3_post_send(mlx, pkt, pksize, NULL, ctx);
+            get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
+            if(bswap16(context->sq_wqe_counter % 1000) == 0) {
+  //              pksize = (2 * pksize);
+            }
+    //          udelay(1);
+       }
+    }
 }
-    
+static inline int
+s_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
+{
+    int limit = 512 * 1024 * 1024;
+    int pkt_size = 2048;
+    int sc;
+    void * pkt = malloc(4096);
+    memset(pkt, 0x7a, 4096);
+    byte_align(pkt, 4096);
+    uint64_t start, end, diff;
+    uint64_t rtt = 0;
+    struct ib_context * ctx = malloc(sizeof(struct ib_context));
+    memset(ctx, 0, sizeof(struct ib_context));
+#if 0 
+    ctx->dlid   = 0x2;
+    ctx->slid   = 0x3;
+#endif
+#if 1 
+    ctx->dlid   = 0xe;
+    ctx->slid   = 0x14;
+#endif
+    ctx->user_op = user_op;
+    ctx->sq_size = PAGE_SIZE_4KB;
+    ctx->rq_size = PAGE_SIZE_4KB * 128;
+    ctx->src_qpn = 64;
+    ctx->dst_qpn = 64;
+    mlx3_post_receive(mlx, pkt, 4096, NULL, ctx);
+    memset(pkt, 0x7, pkt_size);
+    // TODO BRIAN: For some reason packet above 2k causing send to fail
+    ctx->user_op = user_op - 1;
+    scs = 0;
+    mlx3_post_send(mlx, pkt, pkt_size, NULL, ctx);
+   // create_memory_region(mlx, 4096, pkt);
+    struct mlx3_qp_context * context = NULL;
+    mzero_checked(context, sizeof(struct mlx3_qp_context), "QP context skeleton");
+    mlx3_cmd_box_t * mailbox = create_cmd_mailbox(mlx);
+    get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
+    for (int i = 1; i <= 1; i++) {
+    start = rdtsc();
+    while ((sc = bswap16(context->sq_wqe_counter)) <=  (i * 1000)) {   
+    //    scs = sc;
+        mlx3_post_send(mlx, pkt, pkt_size, NULL, ctx);
+        while (sc > bswap16(context->rq_wqe_counter)) {
+//            udelay(1);  
+            get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
+        }
+        end = rdtsc();
+        rtt += end - send_start;
+        get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
+        }
+        //        free(pkt);
+        printk("RTT %ld pkt size %d sc %d\n", rtt/2000, pkt_size, sc);
+        rtt = 0;    
+        pkt_size = (2 * pkt_size);
+
+
+    }
+        return 0;
+    }
+
 static inline void
 init_queue_offsets (struct mlx3_ib * mlx) 
 {
@@ -5625,7 +5732,7 @@ init_queue_offsets (struct mlx3_ib * mlx)
 }
 
 int 
-mlx3_init (struct naut_info * naut) 
+mlx3_inits (struct naut_info * naut) 
 {
     struct mlx3_init_hca_param init_hca;
     struct pci_dev * idev = NULL;
@@ -5752,7 +5859,7 @@ mlx3_init (struct naut_info * naut)
         ERROR("Could not create EQ map\n");
         goto hca_err;
     }
-    mlx3_test_interrupt(mlx);
+    //mlx3_test_interrupt(mlx);
     mlx->cqs = init_cq_map(mlx, mlx->eqs[0], NUM_CQS);
     if (!mlx->cqs) {
         ERROR("Could not create CQ map\n");
@@ -5765,48 +5872,33 @@ mlx3_init (struct naut_info * naut)
         goto qp_err; 
     }
     mlx3_config_mad_demux(mlx); 
-    mlx3_create_special_qp(mlx);
+//    mlx3_create_special_qp(mlx);
+    
     if (mlx3_init_port(mlx, 1)) {
         ERROR("Could not init port\n");
         goto port_err;
     }
 
-/**
- * Receive Packet Interface
- * For recv the src and dest lids will exchange
- */ 
-#if 1 
-
-    void * pkt = malloc (4096 + 32);
-    memset(pkt, 0x00, 4096 + 32 );
-    byte_align(pkt, 32);
-    struct ib_context * ctx = malloc(sizeof(struct ib_context));
-    memset(ctx, 0, sizeof(struct ib_context));
-
-    ctx->dlid   = 0x14;
-    ctx->slid   = 0xe;
-    ctx->src_qpn = 72;
-    ctx->user_op = OP_UD_RECV;
-    mlx3_post_receive (mlx, pkt, 4096, NULL, ctx);
-    //mlx3_rcv_pkt(mlx, mlx->cqs[0] , MLX3_UC);
-#endif
 
 /** 
  *Send Packet Interface UUser only knows to know about the destination lid and opcode
  * For raw packets you need to build the packet before post send an UD exaple is implemented in  mlx3_build_raw_pkt()  
  */
+#if 1   
+    s_pingpong(mlx, OP_RC_RECV);
+#endif
+/**
+ * Receive Packet Interface
+ * For recv the src and dest lids will exchange
+    For UD Post Receive request first 40 bytes i grh and ino grh the first 40 bytes is undefined 
+ */ 
 #if 0 
-    ud_pingpong(mlx);
+    r_pingpong(mlx, OP_RC_RECV);
 #endif
     DEBUG("PXE ConnectX3 up and running...\n");
 
-    while (1) {
-//        udelay(600000);
-        //dump_packet(mlx, (void*)(0x3fa1c000), 512); 
- //       mlx3_ib_query_qp(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, 64)]);
-        //mlx3_query_port(mlx, 1, mlx->port_cap, 1);  
+    while(1) {
     }
-
     return 0;
 
 port_err:
@@ -5837,4 +5929,25 @@ out_err:
     free(mlx);
     return -1;
 }
+static void
+init_thread(void * in, void **out)
+{
+    mlx3_inits (in);
+}
+int 
+mlx3_init (struct naut_info * naut) 
+{
+     nk_thread_id_t t;
 
+     if (nk_thread_start(init_thread,
+                 naut,
+                 0,
+                 0,
+                 TSTACK_2MB,
+                 &t,
+                 -1)) {
+         printk("Could not create xtask main thread\n");
+         return -1;
+     }
+    return 0;
+}
