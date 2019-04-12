@@ -4698,8 +4698,7 @@ send_using_bf(struct mlx3_ib * mlx, struct mlx3_qp * qp, int send_counter, int o
             break;
     }
     
-    if (send_counter == -1)
-        send_counter  = get_qp_send_counter(mlx, qp);
+    send_counter  = get_qp_send_counter(mlx, qp);
 
     ctrl                 = (((send_counter * qp->tx->bb_size)) % qp->tx->buf_size) + qp->tx->buf;  
     ctrl->vlan_cv_f_ds  |=  bswap32((qp->qpn << 8) | (size / 16)); // size in 16 bytes
@@ -5685,9 +5684,10 @@ r_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
 
     ctx->src_qpn = 64;
     ctx->dst_qpn = 64;
-    ctx->rq_size = PAGE_SIZE_4KB * 64;
-    ctx->sq_size = PAGE_SIZE_4KB * 64;
+    ctx->rq_size = PAGE_SIZE_4KB * 4;
+    ctx->sq_size = PAGE_SIZE_4KB * 4;
     ctx->user_op = user_op;
+    ctx->bflame = 1;
     mlx3_post_receive (mlx, pkt, 4096, NULL, ctx);
    // mlx3_rcv_pkt(mlx, mlx->cqs[0] , MLX3_UC);
 //    create_memory_region(mlx, 4096, pkt);
@@ -5743,11 +5743,11 @@ s_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
     ctx->slid   = 0x19;
 #endif
     ctx->user_op = user_op;
-    ctx->sq_size = PAGE_SIZE_4KB * 64;
-    ctx->rq_size = PAGE_SIZE_4KB * 64;
+    ctx->sq_size = PAGE_SIZE_4KB * 4;
+    ctx->rq_size = PAGE_SIZE_4KB * 4;
     ctx->src_qpn = 64;
     ctx->dst_qpn = 64;
-    ctx->bflame = 0;
+    ctx->bflame = 1;
     mlx3_post_receive(mlx, pkt, 4096, NULL, ctx);
     memset(pkt, 0x7, pkt_size);
     // TODO BRIAN: For some reason packet above 2k causing send to fail
