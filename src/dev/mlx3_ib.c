@@ -3551,7 +3551,7 @@ out_err:
 
 static int
 build_mlx_ud_wqe (struct mlx3_ib * mlx, 
-                  struct mlx3_tx_ud_desc * tx_desc, 
+                  struct mlx3_ud_desc * tx_desc, 
                   int port, 
                   void * pkt, 
                   int dst_qpn, 
@@ -3566,7 +3566,7 @@ build_mlx_ud_wqe (struct mlx3_ib * mlx,
     av->dlid    = bswap16(dlid);
     av->g_slid  = slid & 0x7f;
     /* Ctrl segment */
-    tx_desc->ctrl.vlan_cv_f_ds  = bswap32(sizeof(struct  mlx3_tx_ud_desc) / 16) ; // size in 16 bytes
+    tx_desc->ctrl.vlan_cv_f_ds  = bswap32(sizeof(struct  mlx3_ud_desc) / 16) ; // size in 16 bytes
     tx_desc->ctrl.flags         = bswap32((0x3 << 2)); // generate a CQE on a good send completion
     tx_desc->ud_ctrl.dst_qpn       = bswap32(dst_qpn);
     tx_desc->ud_ctrl.qkey       = bswap32(qkey); 
@@ -3617,7 +3617,7 @@ build_mlx_uc_wqe (struct mlx3_ib * mlx, struct mlx3_uc_desc * tx_desc, void* pkt
 
 
 static int
-build_mlx_ud_nops_wqe (struct mlx3_ib * mlx, struct mlx3_tx_ud_desc * tx_desc, int port)
+build_mlx_ud_nops_wqe (struct mlx3_ib * mlx, struct mlx3_ud_desc * tx_desc, int port)
 {
     /* Ctrl segment */
     tx_desc->ctrl.flags |= bswap32(0x3 << 2); // generate a CQE on a good send completion
@@ -3704,14 +3704,16 @@ mlx3_attach_sq (struct mlx3_ib * mlx, struct mlx3_qp * qp, int size, int stride,
 	swq->log_stride = ilog2(stride);
     swq->bb_size    = 16 * swq->stride; // See QPN Context Entry Format: PRM pp. 184
     swq->bb_count   = size / swq->bb_size;
-    swq->buf_size   = size;
+    swq->headroom   = SQ_HEADROOM + swq->bb_size;
+    
+    swq->buf_size   = size - swq->headroom; //asuming one basic block to be a single wqe
     swq->buf        = buf_start;
     swq->valid      = 0; // used for owner bit
 
 
     // All WQEBBs should initially be set such that every 64-byte block
     // within them is set to invalid
-    for (i = 0; i < swq->buf_size / 64; i++) {
+    for (i = 0; i < (swq->buf_size + swq->headroom)/ 64; i++) {
         uint32_t * eqe_hdr = (uint32_t*)(swq->buf + (i * 64));
         eqe_hdr[0] = bswap32(0x7fffffff | ((!swq->valid) << 31));	 
     }
@@ -3855,7 +3857,7 @@ mlx3_fill_qp_ctx (struct mlx3_ib * mlx, struct mlx3_qp * qp)
     }
 	
 	if (qp->tx != NULL) {
-		qp->ctx->sq_size_stride = ilog2(qp->tx->bb_count) << 3 | (qp->tx->log_stride) | (0 << 7);	    
+		qp->ctx->sq_size_stride = ilog2(qp->tx->bb_count) << 3 | (qp->tx->log_stride | (0 << 7));	    
     } 
     qp->ctx->params2        |= bswap32(MLX3_QP_BIT_FPP);    
     qp->ctx->cqn_send       = bswap32(qp->cq->cqn);
@@ -4278,7 +4280,7 @@ mlx3_create_qp (struct mlx3_ib * mlx,
 
     DEBUG("TP CTX %d\n", parms->tp);
     
-    qp = create_qp(mlx, cq, parms->rq_size + parms->sq_size, parms->is_sqp, parms->tp);
+    qp = create_qp(mlx, cq, parms->rq_size + parms->sq_size , parms->is_sqp, parms->tp);
 
     if (!qp) {
         ERROR("Could not create QP\n");
@@ -4493,7 +4495,7 @@ build_wqe (struct mlx3_ib * mlx,
            int rkey,
            int send_counter)
 {
-   // int send_counter                = get_qp_send_counter(mlx, qp);
+    send_counter                = get_qp_send_counter(mlx, qp);
     struct mlx3_tx_raw * tx_desc    = NULL;
     struct mlx3_wqe_ctrl_seg * ctrl = NULL;
     void * buf_start                = NULL;
@@ -4556,8 +4558,7 @@ build_wqe (struct mlx3_ib * mlx,
         default:
             ERROR("Invalid transport opcode (%d)\n", opcode);
             return -1;
-
-    }
+    } 
     
     if (send_counter % qp->tx->bb_count)
         qp->tx->valid += 1;
@@ -4680,17 +4681,32 @@ fixup_ib_context (struct ib_context * ctx)
     return 0;
 }
 static int
-send_using_bf(struct mlx3_ib * mlx, struct mlx3_qp * qp, int send_counters)
+send_using_bf(struct mlx3_ib * mlx, struct mlx3_qp * qp, int send_counter, int opcode)
 {
     struct mlx3_wqe_ctrl_seg * ctrl = NULL;
- 
-    struct mlx3_uc_desc * ctrls = NULL;
-    int send_counter                = get_qp_send_counter(mlx, qp);
-    ctrl = (((send_counter * qp->tx->bb_size)) % qp->tx->buf_size) + qp->tx->buf;  
-    ctrl->vlan_cv_f_ds  |=  bswap32((qp->qpn << 8) | (sizeof(struct  mlx3_uc_desc) / 16)) ; // size in 16 bytes
-    ctrl->owner_opcode |= bswap32(send_counter << 8);
-    ctrls = (void*)ctrl;
-    bf_copy((uint64_t*)((mlx->uar_start + mlx->caps->uar_size) + ((send_counter % 2) * (mlx->caps->bf_reg_size/2)) + (qp->uar << PAGE_SHIFT_4KB)) , (uint64_t*)ctrls, sizeof(*ctrls));
+    uint32_t size = -1; 
+   
+    switch (opcode) {
+        case OP_RC_SEND:
+            size = sizeof(struct mlx3_uc_desc); 
+            break;
+        case OP_UC_SEND:
+            size = sizeof(struct mlx3_uc_desc); 
+            break;
+        case OP_UD_SEND:
+            size = sizeof(struct mlx3_ud_desc); 
+            break;
+    }
+    
+    if (send_counter == -1)
+        send_counter  = get_qp_send_counter(mlx, qp);
+
+    ctrl                 = (((send_counter * qp->tx->bb_size)) % qp->tx->buf_size) + qp->tx->buf;  
+    ctrl->vlan_cv_f_ds  |=  bswap32((qp->qpn << 8) | (size / 16)); // size in 16 bytes
+    ctrl->owner_opcode  |=  bswap32(send_counter << 8);
+   
+    bf_copy((uint64_t*)((mlx->uar_start + mlx->caps->uar_size) + ((send_counter % 2) * (mlx->caps->bf_reg_size/2)) + (qp->uar << PAGE_SHIFT_4KB)) , (uint64_t*)ctrl, size);
+   
     return 0;
 }
 static int 
@@ -4705,19 +4721,22 @@ mlx3_post_send (void * state,
     struct mlx3_qp * qp     = NULL;
     fixup_ib_context(ctx);
     qp = get_or_create_qp(mlx, ctx);
+    
     if (!qp) {
         ERROR("Could not post send, no available QPs\n");
         return -1;
     }
- //   uint64_t st = rdtsc();
-    build_wqe(mlx, qp, ctx->user_op, ctx->port, src, len, ctx->dst_qpn, ctx->qkey, ctx->dlid, ctx->slid, ctx->va, ctx->rkey, ctx->sc);
-    //    DEBUG("RDTSC %ld\n", rdtsc()-st);
-    send_wqe(qp);     
     
-//    send_using_bf(mlx, qp, ctx->sc);    
-    send_start = rdtsc();
-    return 0;
+    build_wqe(mlx, qp, ctx->user_op, ctx->port, src, len, ctx->dst_qpn, ctx->qkey, ctx->dlid, ctx->slid, ctx->va, ctx->rkey, ctx->sc);
 
+    if (ctx->bflame == 1)    
+        send_using_bf(mlx, qp, ctx->sc, ctx->user_op);    
+    else
+        send_wqe(qp);     
+
+    send_start = rdtsc();
+
+    return 0;
 }
 
 
@@ -5709,7 +5728,7 @@ s_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
     memset(pkt, 0x7a, 4096);
     byte_align(pkt, 4096);
     uint64_t start, end;
-    int iterations = 10;
+    int iterations = 50;
     uint64_t trttcl = 0, rttcl = 0;
     struct ib_context * ctx = malloc(sizeof(struct ib_context));
     uint64_t ns1, ns2;
@@ -5728,6 +5747,7 @@ s_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
     ctx->rq_size = PAGE_SIZE_4KB * 64;
     ctx->src_qpn = 64;
     ctx->dst_qpn = 64;
+    ctx->bflame = 0;
     mlx3_post_receive(mlx, pkt, 4096, NULL, ctx);
     memset(pkt, 0x7, pkt_size);
     // TODO BRIAN: For some reason packet above 2k causing send to fail
@@ -5741,22 +5761,22 @@ s_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
     int iter = 0;
     uint64_t min = 999999999;
     uint64_t avg = 0;
-        while (iter  <=  iterations) {   
-            start = rdtsc();
-            mlx3_post_send(mlx, pkt, pkt_size, NULL, ctx);
-            ctx->sc++;
-            tm1 = rdtsc();
-            while (flag_send == 0) {
-                //        get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
-                tm2 = rdtsc() - tm1;
+    while (iter  <=  iterations) {   
+        start = rdtsc();
+        mlx3_post_send(mlx, pkt, pkt_size, NULL, ctx);
+        ctx->sc++;
+        tm1 = rdtsc();
+        while (flag_send == 0) {
+            tm2 = rdtsc() - tm1;
 
-      //          if (tm2 > 99000000) {
-        //            flag_send = 2;
-          //      }
-//                if(flag_send == 2 ) {
-  //                  break;
-    //            }
+            if (tm2 > 20000000) {
+                flag_send = 2;
             }
+            if(flag_send == 2 ) {
+                break;
+            }
+        }
+        if (flag_send == 1) {
             end = rdtsc();
             flag_send = 0;
             iter++;
@@ -5771,17 +5791,15 @@ s_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
             }
             get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
             printk("RTT (without Processing time)  %ld cycles Time Taken %ld ns RTT(With Processing Time) %ld cycles Time Taken %ld ns pkt size %d sc %d rc %d Flag %d\n", rttcl, ns1, trttcl, ns2, pkt_size, context->sq_wqe_counter, context->rq_wqe_counter, flag_send);
-            }
-            destroy_cmd_mailbox(mailbox);
+        }
             flag_send = 0;
-            mlx3_ib_query_qp(mlx, mlx->qps[0]);
-        
+    }     
         avg = avg / iterations;
         uint64_t avg_time = avg / (TINKER_CLOCK_SPEED); 
         uint64_t min_time = min / (TINKER_CLOCK_SPEED);
-        get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
         printk("\nMinimum RTT (without Processing time)  %ld Minimum cycles Time Taken %ld ns Average Cycle %ld Average Time %ld ns Iterations %d\n", min, min_time, avg, avg_time, iterations);
 #endif
+        mlx3_ib_query_qp(mlx, mlx->qps[0]);
         printk("PING PONG Experiment Complete\n");
         return 0;
 }
@@ -5807,7 +5825,7 @@ init_queue_offsets (struct mlx3_ib * mlx)
 }
 
 int 
-mlx3_inits (struct naut_info * naut) 
+mlx3_init (struct naut_info * naut) 
 {
     struct mlx3_init_hca_param init_hca;
     struct pci_dev * idev = NULL;
@@ -5929,6 +5947,8 @@ mlx3_inits (struct naut_info * naut)
     }
 
 //    sti();
+
+//    sti();
     mlx->eqs = init_eq_map(mlx, NUM_EQS);
     if (!mlx->eqs) {
         ERROR("Could not create EQ map\n");
@@ -6006,6 +6026,8 @@ out_err:
     free(mlx);
     return -1;
 }
+
+#if 0
 static void
 init_thread(void * in, void **out)
 {
@@ -6031,3 +6053,4 @@ mlx3_init (struct naut_info * naut)
     mlx3_inits (naut);
     return 0;
 }
+#endif

@@ -37,8 +37,8 @@
 #define DEBUG(fmt, args...)    DEBUG_PRINT("MLX3: " fmt, ##args)
 #define ERROR(fmt, args...)    ERROR_PRINT("MLX3: " fmt, ##args)
 #define PAGE_ALIGN(addr)        ALIGN(addr, PAGE_SIZE_4KB)
-#define CQ_DB_SIZE              8
-#define QP_DB_SIZE              4
+#define CQ_DB_SIZE              PAGE_SIZE_4KB 
+#define QP_DB_SIZE              PAGE_SIZE_4KB 
 /* Note that MMIO accesses must be 4-byte aligned according to PRM */
 #define READ_MEM(d, o)         (*((volatile uint32_t*)(((d)->mmio_start)+(o))))
 #define WRITE_MEM(d, o, v)     ((*((volatile uint32_t*)(((d)->mmio_start)+(o))))=(v))
@@ -52,12 +52,12 @@
 #define ICRC_LEN  4
 #define VCRC_LEN  2
 
-
-#define SQ_STRIDE_DEFAULT 64
-#define RQ_STRIDE_DEFAULT 16
+#define SQ_HEADROOM       2048
+#define SQ_STRIDE_DEFAULT 64 
+#define RQ_STRIDE_DEFAULT 16 
 #define QKEY_DEFAULT        0x0000000011111111
 #define PORT_DEFAULT        1 
-#define DQPN_DEFAULT        72 
+#define DQPN_DEFAULT        64 
 #define SQ_SIZE_DEFAULT     2048 
 #define RQ_SIZE_DEFAULT     2048 
 #define MLX_TRANSPORT 0x7
@@ -137,7 +137,7 @@
                      */
 
 #define ETH_HLEN    14      /* Total octets in header.   */
-#define DEFAULT_NUM_CQE 256 
+#define DEFAULT_NUM_CQE 1024 
 #define ETH_FCS_LEN 4       /* Octets in the FCS         */
 /* VLAN_HLEN is added twice,to support skb vlan tagged with multiple
  * headers. (For example: ETH_P_8021Q and ETH_P_8021AD).
@@ -460,7 +460,7 @@
 #define MLX3_DEFAULT_NUM_MPT       (1<<19)
 #define MLX3_DEFAULT_NUM_MTT       (1<<20)  //based ON 1024 Ram Mem 1024 >> log_mtt_per_seg-1
 #define MLX3_MAX_NUM_EQS           (1<<9)
-
+#define SQ_HEADROOM                 2048
 #define QP_ANY (-1)
 
 struct mlx3_query_adapter {
@@ -681,9 +681,9 @@ struct mlx3_dev_cap {
 	/* 0x4C */
 	uint8_t log_max_bf_pages ;
 	uint8_t rsvd33 ;
-	uint8_t log_max_bf_regs_per_page ;
+	int bf_regs_per_page ;
 	uint8_t rsvd34 ;
-	uint8_t log_bf_reg_size ;
+	int bf_reg_size ;
 	uint16_t rsvd35 ;
 	uint8_t bf ;
 
@@ -1057,7 +1057,7 @@ enum {
  *    */
 enum {
     MLX3_TABLE_CHUNK_SIZE      = 1 << 18,
-    MLX3_TABLE_CHUNK_SIZE_EQ   = 1 << 15
+    MLX3_TABLE_CHUNK_SIZE_EQ   = 1 << 15 
 
 };
 
@@ -1214,8 +1214,7 @@ struct mlx3_eq_context
     uint8_t                      log_eq_size;
     uint8_t                      reserved2[4];
     uint8_t                      eq_period;
-    uint8_t                      reserved3;
-    uint8_t                      eq_max_count;
+    uint16_t                      eq_max_count;
     uint8_t                      reserved4[3];
     uint8_t                      intr;
     uint8_t                      log_page_size;
@@ -1776,6 +1775,7 @@ struct mlx3_qp {
     struct mlx3_rx_ring * rx;
     struct mlx3_cq * cq;
     int qpn;
+    int sc;
     int uar;
     int is_sqp;
     int tp_cx;
@@ -1839,12 +1839,14 @@ struct ib_context {
     int src_qpn;
     int dst_qpn;
     int sq_size;
+    int sc;
     int rq_size;
     int sq_stride;
     int rq_stride;
     uint32_t qkey; 
     uint32_t va;
     uint32_t rkey;
+    int     bflame;
 };
 
 struct mlx3_av {
@@ -1982,7 +1984,7 @@ struct mlx3_uc_desc {
     };
 };
 
-struct mlx3_tx_ud_desc {
+struct mlx3_ud_desc {
     struct mlx3_wqe_ctrl_seg ctrl;
     struct mlx3_wqe_datagram_seg ud_ctrl;
     union {
@@ -2003,6 +2005,7 @@ struct mlx3_tx_raw {
 struct mlx3_tx_ring {
 
     uint32_t                    cons;
+    uint32_t                    headroom;
     uint32_t                    prod;
     uint32_t                    doorbell_qpn;
     struct mlx3_qp             *qp;
