@@ -137,7 +137,7 @@
                      */
 
 #define ETH_HLEN    14      /* Total octets in header.   */
-#define DEFAULT_NUM_CQE 1024 
+#define DEFAULT_NUM_CQE 4096 
 #define ETH_FCS_LEN 4       /* Octets in the FCS         */
 /* VLAN_HLEN is added twice,to support skb vlan tagged with multiple
  * headers. (For example: ETH_P_8021Q and ETH_P_8021AD).
