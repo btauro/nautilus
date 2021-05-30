@@ -2897,20 +2897,20 @@ mlx3_alloc_data (struct mlx3_ib * mlx,
         return -1;
     }
     memset(frag, 0, FRAG_SIZE);
-    rxd->data[0].lkey       = bswap32(mlx->caps->resd_lkey); 
     rxd->data[0].addr       = bswap64((uint64_t)frag);
-    rdma_bt[rdmc] = (uint64_t * )frag;
-    rdmc++;
-#if 0
+#if 1 
     if (rdmc == 0)
     {
+        rdma_bt[rdmc] = (uint64_t * )frag;
         create_memory_region(mlx, FRAG_SIZE, frag);
         //rxd->data[0].lkey       = bswap32(mlx->caps->resd_lkey); 
         rxd->data[0].lkey = bswap32(mlx->mr_table.dmpt->key);
-        rdma_bt = (uint64_t * )frag;
-        INFO("RDMA_BT %x key %x\n", rdma_bt, mlx->mr_table.dmpt->key);
+        INFO("RDMA_BT %x key %x\n", rdma_bt[0], mlx->mr_table.dmpt->key);
         rdmc++;
     }
+    else
+        rxd->data[0].lkey       = bswap32(mlx->caps->resd_lkey); 
+    rdmc++;
 #endif
     barrier(); 
     rxd->data[0].byte_count = bswap32(FRAG_SIZE);
@@ -5655,7 +5655,7 @@ init_eq_map (struct mlx3_ib * mlx, int num_eqs)
 
     for (i = 0; i < num_eqs; i++) {
 
-        eq_map[i] = init_eq_irq(mlx);
+        eq_map[i] = init_eq_poll(mlx);
         
         if (!eq_map[i]) {
             ERROR("Could not Initialize EQ %d\n", i);
@@ -5792,9 +5792,65 @@ r_rdma_test (struct mlx3_ib * mlx, user_trans_op_t user_op)
     int pksize = 1024;
     struct ib_context * ctx = malloc(sizeof(struct ib_context));
     memset(ctx, 0, sizeof(struct ib_context));
+//Tinker -0
 #if 1 
-    ctx->slid   = 0x2;
-    ctx->dlid   = 0x3;
+    ctx->slid   = 0x3;
+    ctx->dlid   = 0x2;
+#endif
+
+#if 0 
+    ctx->slid   = 0x1b;
+    ctx->dlid   = 0x19;
+#endif
+
+    ctx->src_qpn = 64;
+    ctx->dst_qpn = 64;
+    ctx->rq_size = PAGE_SIZE_4KB * 64;
+    ctx->sq_size = PAGE_SIZE_4KB * 64;
+    ctx->user_op = user_op;
+    ctx->bflame = 0;
+    mlx3_post_receive (mlx, pkt, 4096, NULL, ctx);
+   // mlx3_rcv_pkt(mlx, mlx->cqs[0] , MLX3_UC);
+//    create_memory_region(mlx, 4096, pkt);
+    struct mlx3_qp_context * context = NULL;
+    mzero_checked(context, sizeof(struct mlx3_qp_context), "QP context skeleton");
+#if 0
+    while (1) {
+        get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
+
+        if (context->sq_wqe_counter < context->rq_wqe_counter) {
+            ctx-> sc = context->sq_wqe_counter;
+            ctx->user_op = user_op - 1;
+            mlx3_post_send(mlx, pkt, pksize, NULL, ctx);
+//              udelay(1);
+        }
+    }
+#endif
+
+    mlx3_cmd_box_t * mailbox = NULL;
+    mailbox = create_cmd_mailbox(mlx);
+    memset(context, 0 , sizeof(struct mlx3_qp_context));
+    while(1) {
+        udelay(10000000);
+        DEBUG("RDMA ADDR %x", rdma_bt[0]);
+        dump_packet(mlx, rdma_bt[0], 4096);
+    }
+}
+static inline int
+r_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
+{
+    void * pkt = malloc (4096);
+    memset(pkt, 0x77, 4096);
+    byte_align(pkt, 32);
+    int sc = 0, rc = 0; 
+    int pkt_size = 4096;
+    int pksize = 1024;
+    struct ib_context * ctx = malloc(sizeof(struct ib_context));
+    memset(ctx, 0, sizeof(struct ib_context));
+//Tinker-0
+#if 1 
+    ctx->slid   = 0x3;
+    ctx->dlid   = 0x2;
 #endif
 
 #if 0 
@@ -5830,59 +5886,6 @@ r_rdma_test (struct mlx3_ib * mlx, user_trans_op_t user_op)
     mailbox = create_cmd_mailbox(mlx);
     memset(context, 0 , sizeof(struct mlx3_qp_context));
     while(1) {
-        udelay(10000000);
-        dump_packet(mlx, rdma_bt[0], 4096);
-    }
-}
-static inline int
-r_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
-{
-    void * pkt = malloc (4096);
-    memset(pkt, 0x77, 4096);
-    byte_align(pkt, 32);
-    int sc = 0, rc = 0; 
-    int pkt_size = 4096;
-    int pksize = 1024;
-    struct ib_context * ctx = malloc(sizeof(struct ib_context));
-    memset(ctx, 0, sizeof(struct ib_context));
-#if 1 
-    ctx->slid   = 0x2;
-    ctx->dlid   = 0x3;
-#endif
-
-#if 0 
-    ctx->slid   = 0x1b;
-    ctx->dlid   = 0x19;
-#endif
-
-    ctx->src_qpn = 64;
-    ctx->dst_qpn = 64;
-    ctx->rq_size = PAGE_SIZE_4KB * 2;
-    ctx->sq_size = PAGE_SIZE_4KB * 2;
-    ctx->user_op = user_op;
-    ctx->bflame = 0;
-    mlx3_post_receive (mlx, pkt, 4096, NULL, ctx);
-   // mlx3_rcv_pkt(mlx, mlx->cqs[0] , MLX3_UC);
-//    create_memory_region(mlx, 4096, pkt);
-    struct mlx3_qp_context * context = NULL;
-    mzero_checked(context, sizeof(struct mlx3_qp_context), "QP context skeleton");
-#if 0
-    while (1) {
-        get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
-
-        if (context->sq_wqe_counter < context->rq_wqe_counter) {
-            ctx-> sc = context->sq_wqe_counter;
-            ctx->user_op = user_op - 1;
-            mlx3_post_send(mlx, pkt, pksize, NULL, ctx);
-//              udelay(1);
-        }
-    }
-#endif
-
-    mlx3_cmd_box_t * mailbox = NULL;
-    mailbox = create_cmd_mailbox(mlx);
-    memset(context, 0 , sizeof(struct mlx3_qp_context));
-    while(1) {
 #if 1 
         get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
         if (context->sq_wqe_counter != context->rq_wqe_counter) {
@@ -5892,43 +5895,41 @@ r_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
             flag_send = 0;
         }
 #endif
-        printk (" # Buffers %d", rdmc);
-        for (int i = 0 ; i < rdmc; i++)
-            dump_packet(mlx, (void *)rdma_bt[i], 4096);
+        udelay(1000000);
+        dump_packet(mlx, rdma_bt[0], 4096);
     }
 }
 static inline int
 s_rdma_test (struct mlx3_ib * mlx, user_trans_op_t user_op)
 {
     #define TINKER_CLOCK_SPEED 2.2
-    int pkt_size = 1024;
+    int pkt_size = 512;
     void * pkt = malloc(4096);
-    memset(pkt, 0x7a, 4096);
-    byte_align(pkt, 4096);
+    memset(pkt, 0xab, 4096);
+    byte_align(pkt, 32);
     uint64_t start, end;
-    int iterations = 50;
+    int iterations = 1;
     uint64_t trttcl = 0, rttcl = 0;
     struct ib_context * ctx = malloc(sizeof(struct ib_context));
     uint64_t ns1, ns2;
     uint64_t tm1 = 0, tm2 = 0;
     memset(ctx, 0, sizeof(struct ib_context));
+    //Tinker-1
 #if 1 
-    ctx->dlid   = 0x2;
-    ctx->slid   = 0x3;
+    ctx->dlid   = 0x3;
+    ctx->slid   = 0x2;
 #endif
 #if 0 
     ctx->dlid   = 0x1b;
     ctx->slid   = 0x19;
 #endif
-    ctx->user_op = OP_UC_RECV;
     ctx->sq_size = PAGE_SIZE_4KB * 64;
     ctx->rq_size = PAGE_SIZE_4KB * 64;
     ctx->src_qpn = 64;
     ctx->dst_qpn = 64;
-    ctx->bflame  = 1;
+    ctx->bflame  = 0;
     ctx->va      = 0x16ade000;
     ctx->rkey    = 0x100;
-    mlx3_post_receive(mlx, pkt, 4096, NULL, ctx);
     memset(pkt, 0x7, pkt_size);
     // TODO BRIAN: For some reason packet above 2k causing send to fail
     ctx->user_op = user_op;
@@ -5937,43 +5938,13 @@ s_rdma_test (struct mlx3_ib * mlx, user_trans_op_t user_op)
     struct mlx3_qp_context * context = NULL;
     mzero_checked(context, sizeof(struct mlx3_qp_context), "QP context skeleton");
     mlx3_cmd_box_t * mailbox = NULL;
-#if 1 
     int iter = 0;
     uint64_t min = 999999999;
     uint64_t avg = 0;
-    while (context->sq_wqe_counter  <=  iterations) {   
-        mailbox = create_cmd_mailbox(mlx);
-        memset(context, 0 , sizeof(struct mlx3_qp_context));
-        get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
-        start = rdtsc();
-        mlx3_post_send(mlx, pkt, pkt_size, NULL, ctx);
-        ctx->sc++;
-        get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
-        while (context->rq_wqe_counter != context->sq_wqe_counter) {
-            get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
-        }
-        end = rdtsc();
-        iter++;
-        rttcl = end - send_start;
-        trttcl = end - start;
-        ns1 = rttcl / TINKER_CLOCK_SPEED;
-        ns2 = trttcl / TINKER_CLOCK_SPEED;
-        avg += rttcl; 
-        if (min > rttcl) 
-        {
-            min = rttcl;
-        }
-        destroy_cmd_mailbox(mailbox);
-        printk("\nRTT (without Processing time)  %ld cycles Time Taken %ld ns RTT (with Processing time)  %ld cycles Time Taken %ld ns\n", rttcl, ns1, trttcl, ns2);
-    }     
-        avg = avg / iterations;
-        uint64_t avg_time = avg / (TINKER_CLOCK_SPEED); 
-        uint64_t min_time = min / (TINKER_CLOCK_SPEED);
-        printk("\nMinimum RTT (without Processing time)  %ld Minimum cycles Time Taken %ld ns Average Cycle %ld Average Time %ld ns Iterations %d\n", min, min_time, avg, avg_time, iterations);
-#endif
-        mlx3_ib_query_qp(mlx, mlx->qps[0]);
-        printk("PING PONG Experiment Complete\n");
-        return 0;
+    mlx3_post_send(mlx, pkt, pkt_size, NULL, ctx);
+    mlx3_ib_query_qp(mlx, mlx->qps[0]);
+    printk("PING PONG Experiment Complete\n");
+    return 0;
 }
 static inline int
 s_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
@@ -5990,20 +5961,21 @@ s_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
     uint64_t ns1, ns2;
     uint64_t tm1 = 0, tm2 = 0;
     memset(ctx, 0, sizeof(struct ib_context));
+//Tinker-1
 #if 1 
-    ctx->dlid   = 0x2;
-    ctx->slid   = 0x3;
+    ctx->dlid   = 0x3;
+    ctx->slid   = 0x2;
 #endif
 #if 0 
     ctx->dlid   = 0x1b;
     ctx->slid   = 0x19;
 #endif
     ctx->user_op = user_op;
-    ctx->sq_size = PAGE_SIZE_4KB * 2;
-    ctx->rq_size = PAGE_SIZE_4KB * 2;
+    ctx->sq_size = PAGE_SIZE_4KB * 64;
+    ctx->rq_size = PAGE_SIZE_4KB * 64;
     ctx->src_qpn = 64;
     ctx->dst_qpn = 64;
-    ctx->bflame  = 0;
+    ctx->bflame  = 1;
     mlx3_post_receive(mlx, pkt, 4096, NULL, ctx);
     memset(pkt, 0x7, pkt_size);
     // TODO BRIAN: For some reason packet above 2k causing send to fail
@@ -6217,7 +6189,7 @@ mlx3_init (struct naut_info * naut)
     mlx3_config_mad_demux(mlx); 
 //    mlx3_create_special_qp(mlx);
     
-    if (mlx3_init_port(mlx, 1, 0)) {
+    if (mlx3_init_port(mlx, 1, 1)) {
         ERROR("Could not init port\n");
         goto port_err;
     }
@@ -6227,12 +6199,12 @@ mlx3_init (struct naut_info * naut)
  *Send Packet Interface UUser only knows to know about the destination lid and opcode
  * For raw packets you need to build the packet before post send an UD exaple is implemented in  mlx3_build_raw_pkt()  
  */
-#if 0 
-    printk("Local Node\n");
+#if 1 
+    printk("Local Node RC RDMA  Poll\n");
     s_rdma_test(mlx, OP_UC_RDMA_WRITE);
 #endif
-#if 1 
-    printk("Local Node UD IRQ\n");
+#if 0 
+    printk("Local Node UD POLL\n");
     s_pingpong(mlx, OP_UD_RECV);
 #endif
 /**
@@ -6241,11 +6213,11 @@ mlx3_init (struct naut_info * naut)
     For UD Post Receive request first 40 bytes i grh and ino grh the first 40 bytes is undefined 
  */ 
 #if 0 
-    printk("Remote Node\n");
+    printk("Remote Node RDMA UC TEST POLL\n");
     r_rdma_test(mlx, OP_UC_RECV);
 #endif
 #if 0 
-    printk("Remote Node UD IRQ\n");
+    printk("Remote Node UD POLL\n");
     r_pingpong(mlx, OP_UD_RECV);
 #endif
     DEBUG("PXE ConnectX3 up and running...\n");
