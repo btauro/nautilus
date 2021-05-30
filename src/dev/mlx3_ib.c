@@ -2554,8 +2554,8 @@ dump_packet (struct mlx3_ib * mlx, void * buf, int sz)
 
     while (i < sz) {
 
-        nk_vc_printf("%02X", cursor[i++]);
-
+        if (cursor[i++] != 0) {
+        nk_vc_printf("%02X", cursor[i]);
         if (!(i % LINE_SZ)) {
             nk_vc_printf("\n");
             DEBUG("0x%04X: ", i);
@@ -2563,6 +2563,7 @@ dump_packet (struct mlx3_ib * mlx, void * buf, int sz)
             nk_vc_printf("  ");
         } else {
             nk_vc_printf(" ");
+        }
         }
     }
 
@@ -2882,8 +2883,8 @@ barrier (void)
 {
     asm volatile("" : : : "memory");
 }
-
-
+volatile uint64_t * rdma_bt[1025];
+volatile rdmc = 0;
 static int 
 mlx3_alloc_data (struct mlx3_ib * mlx,
                  struct mlx3_rx_ring * ring,
@@ -2896,10 +2897,21 @@ mlx3_alloc_data (struct mlx3_ib * mlx,
         return -1;
     }
     memset(frag, 0, FRAG_SIZE);
-    //create_memory_region(mlx, FRAG_SIZE, frag);
     rxd->data[0].lkey       = bswap32(mlx->caps->resd_lkey); 
-//    rxd->data[0].lkey = bswap32(mlx->mr_table.dmpt->key);
     rxd->data[0].addr       = bswap64((uint64_t)frag);
+    rdma_bt[rdmc] = (uint64_t * )frag;
+    rdmc++;
+#if 0
+    if (rdmc == 0)
+    {
+        create_memory_region(mlx, FRAG_SIZE, frag);
+        //rxd->data[0].lkey       = bswap32(mlx->caps->resd_lkey); 
+        rxd->data[0].lkey = bswap32(mlx->mr_table.dmpt->key);
+        rdma_bt = (uint64_t * )frag;
+        INFO("RDMA_BT %x key %x\n", rdma_bt, mlx->mr_table.dmpt->key);
+        rdmc++;
+    }
+#endif
     barrier(); 
     rxd->data[0].byte_count = bswap32(FRAG_SIZE);
     return 0;
@@ -2994,11 +3006,8 @@ mlx3_cq_completion (struct mlx3_ib* mlx, uint32_t cqn)
 
 volatile int link = 0;
 
+static int handle_eq_events(struct mlx3_ib * mlx) {
 
-static int 
-eq_irq_handler (excp_entry_t * et, excp_vec_t ev, void * state)
-{
-	struct mlx3_ib * mlx = (struct mlx3_ib*)state;
 	struct mlx3_eq * eq = mlx->eqs[0];
 	struct mlx3_eqe * eqe = NULL;
 	int eqe_factor = 0; //If 32 set to 0
@@ -3006,9 +3015,7 @@ eq_irq_handler (excp_entry_t * et, excp_vec_t ev, void * state)
 	int port;
 	int cqn;
     int qpn;
-    //DEBUG("IRQ\n");
-	writel(eq->clr_mask, eq->clr_int);
-    
+
     while ((eqe = next_eqe_sw(eq, eqe_factor, EQE_SIZE))) {
         switch (eqe->type)
         {
@@ -3040,7 +3047,6 @@ eq_irq_handler (excp_entry_t * et, excp_vec_t ev, void * state)
             default:
                 DEBUG("Unknown event type 0x%02x EQ CONS_INDEX %d Addr %p Sub Type 0x%02x \n", eqe->type, eq->cons_index, (void*)eqe, eqe->subtype);
                 break;
-
         };
 
         ++set_ci;
@@ -3053,6 +3059,27 @@ eq_irq_handler (excp_entry_t * et, excp_vec_t ev, void * state)
     }   
 
     eq_set_ci(eq, 1);
+
+    return 0;
+
+}
+
+static int 
+eq_poll_handler (struct mlx3_ib * mlx)
+{
+    return handle_eq_events(mlx);	
+}
+
+
+static int 
+eq_irq_handler (excp_entry_t * et, excp_vec_t ev, void * state)
+{
+	struct mlx3_ib * mlx = (struct mlx3_ib*)state;
+	struct mlx3_eq * eq = mlx->eqs[0];
+
+	writel(eq->clr_mask, eq->clr_int);
+     
+    handle_eq_events(mlx);
 
     IRQ_HANDLER_END();
 
@@ -3180,6 +3207,8 @@ out_err:
 }
 
 #define MLX3_EQ_STATE_ARMED        (9 <<  8)
+//polling
+#define MLX3_EQ_STATE_FIRED        (0xa <<  8)
 #define MLX3_EQ_STATUS_OK          (0 << 28)
 #define MLX3_EQ_EC		           (1 << 18) 
 #define __force         __attribute__((force))
@@ -3244,6 +3273,80 @@ create_eq (struct mlx3_ib * mlx, uint64_t base_vector)
     ctx->flags       = bswap32(MLX3_EQ_STATUS_OK | MLX3_EQ_STATE_ARMED);
     ctx->log_eq_size = ilog2(eq->nentry);
     ctx->intr = base_vector;
+    ctx->log_page_size   = PAGE_SHIFT_4KB - MLX3_ICM_PAGE_SHIFT;
+    ctx->mtt_base_addr_h = ((uint64_t)eq->mtt) >> 32;
+    ctx->mtt_base_addr_l = bswap32(((uint64_t)eq->mtt) & 0xffffffffu);
+
+    err = mlx3_SW2HW_EQ(mlx, (uint32_t*)ctx, eq->eqn);
+
+    free(ctx);
+
+    if (err) {
+        ERROR("SW2HWEQ failed\n");
+        goto out_err1;
+    }
+
+    return eq;
+
+out_err1:
+    free(eq->buffer);
+out_err0:
+    free(eq);
+    return NULL;
+}
+
+static struct mlx3_eq *
+create_eq_poll (struct mlx3_ib * mlx)
+{
+    struct mlx3_eq_context * ctx        = NULL;
+    struct mlx3_eq * eq                 = NULL;
+
+    int err, npages = 0;
+    int eqe_padding = 32;
+    int cnt         = 0;
+
+    __mzero_checked(eq, sizeof(struct mlx3_eq), "Could not allocate EQ\n", return NULL);
+
+    eq->eqn        = mlx3_alloc_eqn(mlx);
+    eq->dev        = mlx->dev;
+//    eq->nentry     = MLX3_NUM_ASYNC_EQE + MLX3_NUM_SPARE_EQE;
+    eq->nentry     = 4096;
+    eq->cons_index = 0;
+
+    npages = PAGE_ALIGN(eq->nentry * mlx->caps->eqe_size) / PAGE_SIZE_4KB;
+
+    eq->size = npages * PAGE_SIZE_4KB;
+    // NOTE: condition not needed if 128  EQE enteries
+    if (npages == 0) {
+        npages = 1;
+    }
+
+    __mzero_checked(eq->buffer, (npages * PAGE_SIZE_4KB) + (EQE_SIZE -1), 
+            "Could not allocate EQ buffer\n", goto out_err0);
+
+    byte_align(eq->buffer , EQE_SIZE);
+    // NOTE: this assumes we only have *one* EQ which is not a reserved eq! each uar has 4 eq doorbells if uar is reserved even eq cannot be used
+    eq->uar_map = mlx->uar_start  + ((eq->eqn / 4) << PAGE_SHIFT_4KB);
+
+    eq->doorbell = (uint32_t *)(eq->uar_map + (0x800 + 8 * (eq->eqn % 4)));
+    eq->mtt      = (void*)mlx3_alloc_mtt(mlx, npages);
+
+ //   // TODO: Should use MSI-X instead of legacy INTs
+ //   eq->intr_vec = base_vector;
+ //   eq->pci_intr = mlx->dev->cfg.dev_cfg.intr_pin;
+    if (mlx3_WRITE_MTT(mlx, (uint64_t)eq->mtt, eq->buffer, npages)) {
+        ERROR("Could not write MTT\n");
+        goto out_err1;
+    }
+
+    __mzero_checked(ctx, sizeof(struct mlx3_eq_context), "Could not allocate EQ context entry\n", goto out_err1);
+//    ctx->eq_period = 200;
+  //  ctx->eq_max_count = 100;
+  //  removed armed bit
+  //  ctx->flags       = bswap32(MLX3_EQ_STATUS_OK | MLX3_EQ_STATE_ARMED);
+    ctx->flags       = bswap32(MLX3_EQ_STATUS_OK|MLX3_EQ_STATE_FIRED);
+    ctx->log_eq_size = ilog2(eq->nentry);
+//    ctx->intr = base_vector;
     ctx->log_page_size   = PAGE_SHIFT_4KB - MLX3_ICM_PAGE_SHIFT;
     ctx->mtt_base_addr_h = ((uint64_t)eq->mtt) >> 32;
     ctx->mtt_base_addr_l = bswap32(((uint64_t)eq->mtt) & 0xffffffffu);
@@ -4777,7 +4880,7 @@ mlx3_build_raw_pkt (void * pkt, int pkt_size, int src_qpn, int dst_qpn, uint32_t
 
 
 static int 
-mlx3_init_port (struct mlx3_ib * mlx, int port)
+mlx3_init_port (struct mlx3_ib * mlx, int port, int poll)
 {
     DEBUG("\n INIT PORT\n");
     int err;
@@ -4794,7 +4897,9 @@ mlx3_init_port (struct mlx3_ib * mlx, int port)
 
     // wait for the port to come up
     while (link != 1) {
-//        udelay(10);
+        if (poll) {
+            eq_poll_handler(mlx);
+        }
     }
 
 
@@ -4939,7 +5044,40 @@ reg_eq_msix_irq (struct mlx3_ib * mlx) {
     return base_vector;
 }
 static struct mlx3_eq *
-init_eq (struct mlx3_ib * mlx)
+init_eq_poll (struct mlx3_ib * mlx)
+{
+    struct mlx3_eq * eq = NULL;
+	int err = 0;
+
+    eq = create_eq_poll(mlx);
+    if (!eq) {
+		ERROR("Create EQ Failed");
+		return NULL;
+	}
+
+    if (map_eq(mlx, eq)) {
+        goto out_err;
+    }
+        
+	eq_set_ci(eq, 1);
+
+    DEBUG("Created new EQ (Polling):\n");
+    DEBUG("  # %d\n", eq->eqn);
+    DEBUG("  Entry Count: %d\n", eq->nentry);
+    DEBUG("  PCI INT pin: 0x%x\n", eq->pci_intr);
+    DEBUG("  Host INT vector: 0x%x\n", eq->intr_vec);
+    DEBUG("  Doorbell Addr: %p\n", eq->doorbell);
+    DEBUG("  MTT addr: %p\n", eq->mtt);
+    DEBUG("  Buffer Addr: %p\n", eq->buffer);
+
+	return eq;
+
+out_err:
+    free(eq);
+    return NULL;
+}
+static struct mlx3_eq *
+init_eq_irq (struct mlx3_ib * mlx)
 {
     struct mlx3_eq * eq = NULL;
 	int err = 0;
@@ -4963,7 +5101,7 @@ init_eq (struct mlx3_ib * mlx)
         
 	eq_set_ci(eq, 1);
 
-    DEBUG("Created new EQ:\n");
+    DEBUG("Created new EQ: (IRQ)\n");
     DEBUG("  # %d\n", eq->eqn);
     DEBUG("  Entry Count: %d\n", eq->nentry);
     DEBUG("  PCI INT pin: 0x%x\n", eq->pci_intr);
@@ -5517,7 +5655,7 @@ init_eq_map (struct mlx3_ib * mlx, int num_eqs)
 
     for (i = 0; i < num_eqs; i++) {
 
-        eq_map[i] = init_eq(mlx);
+        eq_map[i] = init_eq_irq(mlx);
         
         if (!eq_map[i]) {
             ERROR("Could not Initialize EQ %d\n", i);
@@ -5644,7 +5782,7 @@ free_icm_tables (struct mlx3_ib * mlx)
 
 
 static inline int
-r_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
+r_rdma_test (struct mlx3_ib * mlx, user_trans_op_t user_op)
 {
     void * pkt = malloc (4096);
     memset(pkt, 0x00, 4096);
@@ -5692,6 +5830,59 @@ r_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
     mailbox = create_cmd_mailbox(mlx);
     memset(context, 0 , sizeof(struct mlx3_qp_context));
     while(1) {
+        udelay(10000000);
+        dump_packet(mlx, rdma_bt[0], 4096);
+    }
+}
+static inline int
+r_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
+{
+    void * pkt = malloc (4096);
+    memset(pkt, 0x77, 4096);
+    byte_align(pkt, 32);
+    int sc = 0, rc = 0; 
+    int pkt_size = 4096;
+    int pksize = 1024;
+    struct ib_context * ctx = malloc(sizeof(struct ib_context));
+    memset(ctx, 0, sizeof(struct ib_context));
+#if 1 
+    ctx->slid   = 0x2;
+    ctx->dlid   = 0x3;
+#endif
+
+#if 0 
+    ctx->slid   = 0x1b;
+    ctx->dlid   = 0x19;
+#endif
+
+    ctx->src_qpn = 64;
+    ctx->dst_qpn = 64;
+    ctx->rq_size = PAGE_SIZE_4KB * 2;
+    ctx->sq_size = PAGE_SIZE_4KB * 2;
+    ctx->user_op = user_op;
+    ctx->bflame = 0;
+    mlx3_post_receive (mlx, pkt, 4096, NULL, ctx);
+   // mlx3_rcv_pkt(mlx, mlx->cqs[0] , MLX3_UC);
+//    create_memory_region(mlx, 4096, pkt);
+    struct mlx3_qp_context * context = NULL;
+    mzero_checked(context, sizeof(struct mlx3_qp_context), "QP context skeleton");
+#if 0
+    while (1) {
+        get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
+
+        if (context->sq_wqe_counter < context->rq_wqe_counter) {
+            ctx-> sc = context->sq_wqe_counter;
+            ctx->user_op = user_op - 1;
+            mlx3_post_send(mlx, pkt, pksize, NULL, ctx);
+//              udelay(1);
+        }
+    }
+#endif
+
+    mlx3_cmd_box_t * mailbox = NULL;
+    mailbox = create_cmd_mailbox(mlx);
+    memset(context, 0 , sizeof(struct mlx3_qp_context));
+    while(1) {
 #if 1 
         get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
         if (context->sq_wqe_counter != context->rq_wqe_counter) {
@@ -5701,10 +5892,13 @@ r_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
             flag_send = 0;
         }
 #endif
+        printk (" # Buffers %d", rdmc);
+        for (int i = 0 ; i < rdmc; i++)
+            dump_packet(mlx, (void *)rdma_bt[i], 4096);
     }
 }
 static inline int
-s_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
+s_rdma_test (struct mlx3_ib * mlx, user_trans_op_t user_op)
 {
     #define TINKER_CLOCK_SPEED 2.2
     int pkt_size = 1024;
@@ -5726,12 +5920,90 @@ s_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
     ctx->dlid   = 0x1b;
     ctx->slid   = 0x19;
 #endif
-    ctx->user_op = user_op;
+    ctx->user_op = OP_UC_RECV;
     ctx->sq_size = PAGE_SIZE_4KB * 64;
     ctx->rq_size = PAGE_SIZE_4KB * 64;
     ctx->src_qpn = 64;
     ctx->dst_qpn = 64;
     ctx->bflame  = 1;
+    ctx->va      = 0x16ade000;
+    ctx->rkey    = 0x100;
+    mlx3_post_receive(mlx, pkt, 4096, NULL, ctx);
+    memset(pkt, 0x7, pkt_size);
+    // TODO BRIAN: For some reason packet above 2k causing send to fail
+    ctx->user_op = user_op;
+    ctx->sc = 0;
+//    create_memory_region(mlx, 4096, pkt);
+    struct mlx3_qp_context * context = NULL;
+    mzero_checked(context, sizeof(struct mlx3_qp_context), "QP context skeleton");
+    mlx3_cmd_box_t * mailbox = NULL;
+#if 1 
+    int iter = 0;
+    uint64_t min = 999999999;
+    uint64_t avg = 0;
+    while (context->sq_wqe_counter  <=  iterations) {   
+        mailbox = create_cmd_mailbox(mlx);
+        memset(context, 0 , sizeof(struct mlx3_qp_context));
+        get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
+        start = rdtsc();
+        mlx3_post_send(mlx, pkt, pkt_size, NULL, ctx);
+        ctx->sc++;
+        get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
+        while (context->rq_wqe_counter != context->sq_wqe_counter) {
+            get_qp_counters(mlx, mlx->qps[mlx3_get_qpn_offset(mlx, ctx->src_qpn)], context, mailbox); 
+        }
+        end = rdtsc();
+        iter++;
+        rttcl = end - send_start;
+        trttcl = end - start;
+        ns1 = rttcl / TINKER_CLOCK_SPEED;
+        ns2 = trttcl / TINKER_CLOCK_SPEED;
+        avg += rttcl; 
+        if (min > rttcl) 
+        {
+            min = rttcl;
+        }
+        destroy_cmd_mailbox(mailbox);
+        printk("\nRTT (without Processing time)  %ld cycles Time Taken %ld ns RTT (with Processing time)  %ld cycles Time Taken %ld ns\n", rttcl, ns1, trttcl, ns2);
+    }     
+        avg = avg / iterations;
+        uint64_t avg_time = avg / (TINKER_CLOCK_SPEED); 
+        uint64_t min_time = min / (TINKER_CLOCK_SPEED);
+        printk("\nMinimum RTT (without Processing time)  %ld Minimum cycles Time Taken %ld ns Average Cycle %ld Average Time %ld ns Iterations %d\n", min, min_time, avg, avg_time, iterations);
+#endif
+        mlx3_ib_query_qp(mlx, mlx->qps[0]);
+        printk("PING PONG Experiment Complete\n");
+        return 0;
+}
+static inline int
+s_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
+{
+    #define TINKER_CLOCK_SPEED 2.2
+    int pkt_size = 1024;
+    void * pkt = malloc(4096);
+    memset(pkt, 0x7a, 4096);
+    byte_align(pkt, 32);
+    uint64_t start, end;
+    int iterations = 4;
+    uint64_t trttcl = 0, rttcl = 0;
+    struct ib_context * ctx = malloc(sizeof(struct ib_context));
+    uint64_t ns1, ns2;
+    uint64_t tm1 = 0, tm2 = 0;
+    memset(ctx, 0, sizeof(struct ib_context));
+#if 1 
+    ctx->dlid   = 0x2;
+    ctx->slid   = 0x3;
+#endif
+#if 0 
+    ctx->dlid   = 0x1b;
+    ctx->slid   = 0x19;
+#endif
+    ctx->user_op = user_op;
+    ctx->sq_size = PAGE_SIZE_4KB * 2;
+    ctx->rq_size = PAGE_SIZE_4KB * 2;
+    ctx->src_qpn = 64;
+    ctx->dst_qpn = 64;
+    ctx->bflame  = 0;
     mlx3_post_receive(mlx, pkt, 4096, NULL, ctx);
     memset(pkt, 0x7, pkt_size);
     // TODO BRIAN: For some reason packet above 2k causing send to fail
@@ -5945,7 +6217,7 @@ mlx3_init (struct naut_info * naut)
     mlx3_config_mad_demux(mlx); 
 //    mlx3_create_special_qp(mlx);
     
-    if (mlx3_init_port(mlx, 1)) {
+    if (mlx3_init_port(mlx, 1, 0)) {
         ERROR("Could not init port\n");
         goto port_err;
     }
@@ -5955,8 +6227,12 @@ mlx3_init (struct naut_info * naut)
  *Send Packet Interface UUser only knows to know about the destination lid and opcode
  * For raw packets you need to build the packet before post send an UD exaple is implemented in  mlx3_build_raw_pkt()  
  */
-#if 1 
+#if 0 
     printk("Local Node\n");
+    s_rdma_test(mlx, OP_UC_RDMA_WRITE);
+#endif
+#if 1 
+    printk("Local Node UD IRQ\n");
     s_pingpong(mlx, OP_UD_RECV);
 #endif
 /**
@@ -5966,6 +6242,10 @@ mlx3_init (struct naut_info * naut)
  */ 
 #if 0 
     printk("Remote Node\n");
+    r_rdma_test(mlx, OP_UC_RECV);
+#endif
+#if 0 
+    printk("Remote Node UD IRQ\n");
     r_pingpong(mlx, OP_UD_RECV);
 #endif
     DEBUG("PXE ConnectX3 up and running...\n");
