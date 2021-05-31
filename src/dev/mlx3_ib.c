@@ -2883,8 +2883,8 @@ barrier (void)
 {
     asm volatile("" : : : "memory");
 }
-volatile uint64_t * rdma_bt[1025];
-volatile rdmc = 0;
+volatile uint64_t * rdma_bt;
+volatile rdmc = -1;
 static int 
 mlx3_alloc_data (struct mlx3_ib * mlx,
                  struct mlx3_rx_ring * ring,
@@ -2901,11 +2901,11 @@ mlx3_alloc_data (struct mlx3_ib * mlx,
 #if 1 
     if (rdmc == 0)
     {
-        rdma_bt[rdmc] = (uint64_t * )frag;
+        rdma_bt = (uint64_t * )frag;
         create_memory_region(mlx, FRAG_SIZE, frag);
         //rxd->data[0].lkey       = bswap32(mlx->caps->resd_lkey); 
         rxd->data[0].lkey = bswap32(mlx->mr_table.dmpt->key);
-        INFO("RDMA_BT %x key %x\n", rdma_bt[0], mlx->mr_table.dmpt->key);
+        INFO("RDMA_BT %x key %x\n", rdma_bt, mlx->mr_table.dmpt->key);
         rdmc++;
     }
     else
@@ -4880,7 +4880,7 @@ mlx3_build_raw_pkt (void * pkt, int pkt_size, int src_qpn, int dst_qpn, uint32_t
 
 
 static int 
-mlx3_init_port (struct mlx3_ib * mlx, int port, int poll)
+mlx3_init_port (struct mlx3_ib * mlx, int port)
 {
     DEBUG("\n INIT PORT\n");
     int err;
@@ -4897,9 +4897,9 @@ mlx3_init_port (struct mlx3_ib * mlx, int port, int poll)
 
     // wait for the port to come up
     while (link != 1) {
-        if (poll) {
+#ifdef NAUT_CONFIG_MLX3_POLL
             eq_poll_handler(mlx);
-        }
+#endif
     }
 
 
@@ -5655,7 +5655,13 @@ init_eq_map (struct mlx3_ib * mlx, int num_eqs)
 
     for (i = 0; i < num_eqs; i++) {
 
+#ifdef NAUT_CONFIG_MLX3_POLL
+        printk("EQ configured for Polling\n");
         eq_map[i] = init_eq_poll(mlx);
+#else
+        printk("EQ configured for MSI IRQ\n");
+        eq_map[i] = init_eq_irq(mlx);
+#endif
         
         if (!eq_map[i]) {
             ERROR("Could not Initialize EQ %d\n", i);
@@ -5832,8 +5838,8 @@ r_rdma_test (struct mlx3_ib * mlx, user_trans_op_t user_op)
     memset(context, 0 , sizeof(struct mlx3_qp_context));
     while(1) {
         udelay(10000000);
-        DEBUG("RDMA ADDR %x", rdma_bt[0]);
-        dump_packet(mlx, rdma_bt[0], 4096);
+        DEBUG("RDMA ADDR %x", rdma_bt);
+        dump_packet(mlx, rdma_bt, 4096);
     }
 }
 static inline int
@@ -5895,8 +5901,6 @@ r_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
             flag_send = 0;
         }
 #endif
-        udelay(1000000);
-        dump_packet(mlx, rdma_bt[0], 4096);
     }
 }
 static inline int
@@ -5928,7 +5932,7 @@ s_rdma_test (struct mlx3_ib * mlx, user_trans_op_t user_op)
     ctx->src_qpn = 64;
     ctx->dst_qpn = 64;
     ctx->bflame  = 0;
-    ctx->va      = 0x16ade000;
+    ctx->va      = 0x2d2000;
     ctx->rkey    = 0x100;
     memset(pkt, 0x7, pkt_size);
     // TODO BRIAN: For some reason packet above 2k causing send to fail
@@ -5955,7 +5959,7 @@ s_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
     memset(pkt, 0x7a, 4096);
     byte_align(pkt, 32);
     uint64_t start, end;
-    int iterations = 4;
+    int iterations = 10;
     uint64_t trttcl = 0, rttcl = 0;
     struct ib_context * ctx = malloc(sizeof(struct ib_context));
     uint64_t ns1, ns2;
@@ -6012,12 +6016,12 @@ s_pingpong (struct mlx3_ib * mlx, user_trans_op_t user_op)
             min = rttcl;
         }
         destroy_cmd_mailbox(mailbox);
-        printk("\nRTT (without Processing time)  %ld cycles Time Taken %ld ns RTT (with Processing time)  %ld cycles Time Taken %ld ns\n", rttcl, ns1, trttcl, ns2);
+        printk("\nRTT (without Processing time)  %ld cycles Time Taken %ld ns \nRTT (with Processing time)  %ld cycles Time Taken %ld ns\n", rttcl, ns1, trttcl, ns2);
     }     
         avg = avg / iterations;
         uint64_t avg_time = avg / (TINKER_CLOCK_SPEED); 
         uint64_t min_time = min / (TINKER_CLOCK_SPEED);
-        printk("\nMinimum RTT (without Processing time)  %ld Minimum cycles Time Taken %ld ns Average Cycle %ld Average Time %ld ns Iterations %d\n", min, min_time, avg, avg_time, iterations);
+        printk("\nMinimum RTT (without Processing time)  %ld Minimum cycles Time Taken %ld ns \nAverage Cycle %ld Average Time %ld ns Iterations %d\n", min, min_time, avg, avg_time, iterations);
 #endif
         mlx3_ib_query_qp(mlx, mlx->qps[0]);
         printk("PING PONG Experiment Complete\n");
@@ -6189,7 +6193,7 @@ mlx3_init (struct naut_info * naut)
     mlx3_config_mad_demux(mlx); 
 //    mlx3_create_special_qp(mlx);
     
-    if (mlx3_init_port(mlx, 1, 1)) {
+    if (mlx3_init_port(mlx, 1)) {
         ERROR("Could not init port\n");
         goto port_err;
     }
@@ -6199,13 +6203,13 @@ mlx3_init (struct naut_info * naut)
  *Send Packet Interface UUser only knows to know about the destination lid and opcode
  * For raw packets you need to build the packet before post send an UD exaple is implemented in  mlx3_build_raw_pkt()  
  */
-#if 1 
-    printk("Local Node RC RDMA  Poll\n");
+#if 0 
+    printk("Local Node UC RDMA  Poll\n");
     s_rdma_test(mlx, OP_UC_RDMA_WRITE);
 #endif
-#if 0 
-    printk("Local Node UD POLL\n");
-    s_pingpong(mlx, OP_UD_RECV);
+#if 1 
+    printk("Local Node UC\n");
+    s_pingpong(mlx, OP_UC_RECV);
 #endif
 /**
  * Receive Packet Interface
@@ -6217,8 +6221,8 @@ mlx3_init (struct naut_info * naut)
     r_rdma_test(mlx, OP_UC_RECV);
 #endif
 #if 0 
-    printk("Remote Node UD POLL\n");
-    r_pingpong(mlx, OP_UD_RECV);
+    printk("Remote Node UC\n");
+    r_pingpong(mlx, OP_UC_RECV);
 #endif
     DEBUG("PXE ConnectX3 up and running...\n");
 

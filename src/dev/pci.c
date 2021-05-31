@@ -245,7 +245,9 @@ void *pci_msi_x_get_bar_start(struct pci_dev *dev, uint8_t bar_num)
   // 32 bit memory only at the moment
   if (mem_bar_type != 0) {
     PCI_DEBUG("Cannot handle memory bar type 0x%x\n", mem_bar_type);
+#if 0
     return 0;
+#endif
   }
 
   return (void*) (uint64_t) (bar & 0xfffffff0);

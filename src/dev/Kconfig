@@ -215,6 +215,13 @@ config MLX3_PCI
     help
       Adds experimental driver for the Mellanox ConnectX-3 HCA Adapter
 
+config MLX3_POLL
+    bool "Poll instead of irq for handling events in CX3"
+    depends on MLX3_PCI 
+    default n
+    help
+      Switch to Poll to avoid interrupt overheads 
+
 config DEBUG_MLX3_PCI
     bool "Debug Mellanox ConnectX-3"
     depends on DEBUG_PRINTS && MLX3_PCI
